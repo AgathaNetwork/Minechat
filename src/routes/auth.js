@@ -1,7 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
-const { nanoid } = require('nanoid');
+const { generateId } = require('../utils/id');
 const db = require('../db');
 const { getMinecraftProfileFromMsAccessToken } = require('../utils/minecraft');
 
@@ -12,7 +12,7 @@ const msClientSecret = process.env.MICROSOFT_CLIENT_SECRET;
 const redirectUri = process.env.OAUTH_REDIRECT_URI;
 
 router.get('/microsoft', (req, res) => {
-  const state = nanoid();
+  const state = generateId();
   const scope = encodeURIComponent('XboxLive.signin offline_access');
   const url = `https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize?client_id=${msClientId}&response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&response_mode=query&scope=${scope}&state=${state}`;
   res.redirect(url);
@@ -41,7 +41,7 @@ router.get('/callback', async (req, res) => {
     const msSub = tokenResp.data.id_token || accessToken.substring(0, 12);
     let user = await db.findUserByMsId(msSub);
     if (!user) {
-      const id = nanoid();
+      const id = generateId();
       await db.createUser({ id, msId: msSub, username: profile.name, minecraftId: profile.id });
       user = await db.findUserById(id);
     } else {

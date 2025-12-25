@@ -1,5 +1,4 @@
 const mysql = require('mysql2/promise');
-const { nanoid } = require('nanoid');
 
 const MYSQL_HOST = process.env.MYSQL_HOST || '127.0.0.1';
 const MYSQL_PORT = process.env.MYSQL_PORT || 3306;

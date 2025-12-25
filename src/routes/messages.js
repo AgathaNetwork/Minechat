@@ -2,7 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const { nanoid } = require('nanoid');
+const { generateId } = require('../utils/id');
 const db = require('../db');
 const auth = require('../middleware/auth');
 
@@ -33,7 +33,7 @@ router.post('/:chatId/messages', upload.single('file'), async (req, res) => {
     try { payload = content ? JSON.parse(content) : null; } catch { payload = content; }
   }
 
-  const msg = await db.createMessage({ id: nanoid(), chatId, from: req.user.id, type, content: payload, repliedTo });
+  const msg = await db.createMessage({ id: generateId(), chatId, from: req.user.id, type, content: payload, repliedTo });
   res.json(msg);
 });
 

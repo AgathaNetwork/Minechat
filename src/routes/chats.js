@@ -1,5 +1,5 @@
 const express = require('express');
-const { nanoid } = require('nanoid');
+const { generateId } = require('../utils/id');
 const db = require('../db');
 const auth = require('../middleware/auth');
 
@@ -10,7 +10,7 @@ router.use(auth);
 router.post('/', async (req, res) => {
   const { name, members } = req.body;
   await db.init();
-  const chatId = nanoid();
+  const chatId = generateId();
   const chat = await db.createChat({
     id: chatId,
     type: members && members.length > 2 ? 'group' : 'single',
