@@ -82,6 +82,17 @@ async function init() {
       INDEX (user_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
+
+  await p.execute(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      id VARCHAR(128) PRIMARY KEY,
+      user_id VARCHAR(48),
+      expires_at DATETIME,
+      created_at DATETIME,
+      INDEX (user_id),
+      INDEX (expires_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
 }
 
 // User helpers
@@ -193,6 +204,26 @@ async function addMessageRead(messageId, userId) {
   await p.execute('INSERT IGNORE INTO message_read (message_id, user_id) VALUES (?, ?)', [messageId, userId]);
 }
 
+// Session helpers
+async function createSession({ id, userId, expiresAt }) {
+  const p = await getPool();
+  const createdAt = new Date();
+  await p.execute('INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)', [id, userId, expiresAt, createdAt]);
+  return findSessionById(id);
+}
+
+async function findSessionById(id) {
+  const p = await getPool();
+  const [rows] = await p.execute('SELECT * FROM sessions WHERE id = ? LIMIT 1', [id]);
+  const s = rows[0];
+  return s || null;
+}
+
+async function deleteSession(id) {
+  const p = await getPool();
+  await p.execute('DELETE FROM sessions WHERE id = ?', [id]);
+}
+
 module.exports = {
   init,
   getPool,
@@ -209,4 +240,5 @@ module.exports = {
   findMessageById,
   markMessageDeleted,
   addMessageRead
+  ,createSession, findSessionById, deleteSession
 };

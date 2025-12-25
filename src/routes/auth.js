@@ -52,7 +52,24 @@ router.get('/callback', async (req, res) => {
     }
 
     const token = jwt.sign({ sub: user.id }, process.env.JWT_SECRET || 'dev_secret', { expiresIn: '30d' });
-    res.json({ token, user });
+
+    // create server-side session and set cookie
+    const sessionId = generateId();
+    const days = parseInt(process.env.SESSION_EXPIRES_DAYS || '30', 10);
+    const expiresAt = new Date(Date.now() + days * 24 * 3600 * 1000);
+    await db.createSession({ id: sessionId, userId: user.id, expiresAt });
+
+    const cookieOptions = {
+      httpOnly: true,
+      sameSite: 'lax',
+      maxAge: days * 24 * 3600 * 1000
+    };
+    if ((process.env.COOKIE_SECURE || 'false') === 'true' || process.env.NODE_ENV === 'production') cookieOptions.secure = true;
+
+    res.cookie('minechat_session', sessionId, cookieOptions);
+
+    // return token, user and session id
+    res.json({ token, user, sessionId });
   } catch (e) {
     console.error(e?.response?.data || e.message);
     res.status(500).json({ error: 'Auth failed', details: e?.message });
