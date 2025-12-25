@@ -7,7 +7,9 @@ const path = require('path');
 const authRoutes = require('./routes/auth');
 const chatRoutes = require('./routes/chats');
 const messageRoutes = require('./routes/messages');
+const http = require('http');
 const db = require('./db');
+const { initSocket } = require('./socket');
 
 const app = express();
 app.use(cors());
@@ -26,8 +28,11 @@ app.get('/me', require('./middleware/auth'), (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+const server = http.createServer(app);
+
 db.init().then(() => {
-  app.listen(PORT, () => console.log(`Minechat API listening on ${PORT}`));
+  initSocket(server);
+  server.listen(PORT, () => console.log(`Minechat API listening on ${PORT}`));
 }).catch(err => {
   console.error('Failed to initialize DB:', err);
   process.exit(1);

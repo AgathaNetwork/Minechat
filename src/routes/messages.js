@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const { generateId } = require('../utils/id');
 const db = require('../db');
+const { getIo } = require('../socket');
 const auth = require('../middleware/auth');
 
 const router = express.Router();
@@ -34,6 +35,10 @@ router.post('/:chatId/messages', upload.single('file'), async (req, res) => {
   }
 
   const msg = await db.createMessage({ id: generateId(), chatId, from: req.user.id, type, content: payload, repliedTo });
+  try {
+    const io = getIo();
+    io.to(`chat:${chatId}`).emit('message.created', msg);
+  } catch (e) { }
   res.json(msg);
 });
 
@@ -45,6 +50,7 @@ router.post('/:messageId/recall', async (req, res) => {
   if (!msg) return res.status(404).json({ error: 'Message not found' });
   if (msg.from_user !== req.user.id) return res.status(403).json({ error: 'Not sender' });
   await db.markMessageDeleted(messageId);
+  try { const io = getIo(); io.to(`chat:${msg.chat_id}`).emit('message.deleted', { id: messageId }); } catch (e) { }
   res.json({ ok: true });
 });
 
@@ -55,6 +61,7 @@ router.post('/:messageId/read', async (req, res) => {
   const msg = await db.findMessageById(messageId);
   if (!msg) return res.status(404).json({ error: 'Message not found' });
   await db.addMessageRead(messageId, req.user.id);
+  try { const io = getIo(); io.to(`chat:${msg.chat_id}`).emit('message.read', { messageId, userId: req.user.id }); } catch (e) { }
   res.json({ ok: true });
 });
 
@@ -64,7 +71,8 @@ router.get('/:chatId', async (req, res) => {
   await db.init();
   const chat = await db.getChatById(chatId);
   if (!chat || !chat.members.includes(req.user.id)) return res.status(404).json({ error: 'Chat not found' });
-  const msgs = await db.getMessagesForChat(chatId);
+  const since = req.query.since;
+  const msgs = since ? await db.getMessagesForChatSince(chatId, since) : await db.getMessagesForChat(chatId);
   res.json(msgs);
 });
 

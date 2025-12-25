@@ -172,6 +172,16 @@ async function getMessagesForChat(chatId) {
   return rows;
 }
 
+async function getMessagesForChatSince(chatId, since) {
+  const p = await getPool();
+  // since expected to be an ISO string or timestamp; use as-is in query
+  const [rows] = await p.execute('SELECT * FROM messages WHERE chat_id = ? AND created_at > ? ORDER BY created_at ASC', [chatId, since]);
+  for (const r of rows) {
+    try { r.content = r.content ? JSON.parse(r.content) : null; } catch { }
+  }
+  return rows;
+}
+
 async function markMessageDeleted(messageId) {
   const p = await getPool();
   const deletedAt = new Date();
@@ -195,6 +205,7 @@ module.exports = {
   getChatsForUser,
   createMessage,
   getMessagesForChat,
+  getMessagesForChatSince,
   findMessageById,
   markMessageDeleted,
   addMessageRead
