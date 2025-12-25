@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const { uploadBuffer } = require('../utils/oss');
 const { generateId } = require('../utils/id');
 const db = require('../db');
 const { getIo } = require('../socket');
@@ -10,14 +11,8 @@ const auth = require('../middleware/auth');
 const router = express.Router();
 router.use(auth);
 
-const uploadsDir = path.join(__dirname, '..', 'uploads');
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) { cb(null, uploadsDir); },
-  filename: function (req, file, cb) { cb(null, `${Date.now()}-${file.originalname}`); }
-});
-const upload = multer({ storage });
+// Use memory storage and upload to OSS
+const upload = multer({ storage: multer.memoryStorage() });
 
 // Send message (multipart for files)
 router.post('/:chatId/messages', upload.single('file'), async (req, res) => {
@@ -29,7 +24,15 @@ router.post('/:chatId/messages', upload.single('file'), async (req, res) => {
 
   let payload = null;
   if (type === 'file' || req.file) {
-    payload = { url: `/uploads/${req.file.filename}`, filename: req.file.originalname, mimetype: req.file.mimetype };
+    // upload buffer to OSS
+    try {
+      const file = req.file;
+      const up = await uploadBuffer({ buffer: file.buffer, filename: file.originalname, contentType: file.mimetype });
+      payload = { url: up.url, filename: file.originalname, mimetype: file.mimetype, key: up.key };
+    } catch (e) {
+      console.error('OSS upload failed', e.message || e);
+      return res.status(500).json({ error: 'File upload failed' });
+    }
   } else {
     try { payload = content ? JSON.parse(content) : null; } catch { payload = content; }
   }
