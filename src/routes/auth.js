@@ -1,0 +1,62 @@
+const express = require('express');
+const axios = require('axios');
+const jwt = require('jsonwebtoken');
+const { nanoid } = require('nanoid');
+const db = require('../db');
+const { getMinecraftProfileFromMsAccessToken } = require('../utils/minecraft');
+
+const router = express.Router();
+
+const msClientId = process.env.MICROSOFT_CLIENT_ID;
+const msClientSecret = process.env.MICROSOFT_CLIENT_SECRET;
+const redirectUri = process.env.OAUTH_REDIRECT_URI;
+
+router.get('/microsoft', (req, res) => {
+  const state = nanoid();
+  const scope = encodeURIComponent('XboxLive.signin offline_access');
+  const url = `https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize?client_id=${msClientId}&response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&response_mode=query&scope=${scope}&state=${state}`;
+  res.redirect(url);
+});
+
+router.get('/callback', async (req, res) => {
+  try {
+    const code = req.query.code;
+    if (!code) return res.status(400).json({ error: 'Missing code' });
+
+    const tokenResp = await axios.post('https://login.microsoftonline.com/consumers/oauth2/v2.0/token', new URLSearchParams({
+      client_id: msClientId,
+      client_secret: msClientSecret,
+      code,
+      grant_type: 'authorization_code',
+      redirect_uri: redirectUri
+    }).toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+
+    const accessToken = tokenResp.data.access_token;
+
+    // Exchange for Minecraft profile
+    const profile = await getMinecraftProfileFromMsAccessToken(accessToken);
+
+    await db.init();
+    // Use Microsoft account subject as stable id; fallback to truncated access token
+    const msSub = tokenResp.data.id_token || accessToken.substring(0, 12);
+    let user = await db.findUserByMsId(msSub);
+    if (!user) {
+      const id = nanoid();
+      await db.createUser({ id, msId: msSub, username: profile.name, minecraftId: profile.id });
+      user = await db.findUserById(id);
+    } else {
+      if (user.username !== profile.name) {
+        await db.updateUsername(user.id, profile.name);
+        user = await db.findUserById(user.id);
+      }
+    }
+
+    const token = jwt.sign({ sub: user.id }, process.env.JWT_SECRET || 'dev_secret', { expiresIn: '30d' });
+    res.json({ token, user });
+  } catch (e) {
+    console.error(e?.response?.data || e.message);
+    res.status(500).json({ error: 'Auth failed', details: e?.message });
+  }
+});
+
+module.exports = router;
