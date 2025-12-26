@@ -75,6 +75,18 @@ async function init() {
   `);
 
   await p.execute(`
+    CREATE TABLE IF NOT EXISTS global_messages (
+      id VARCHAR(48) PRIMARY KEY,
+      from_user VARCHAR(48),
+      type VARCHAR(32),
+      content JSON,
+      created_at DATETIME,
+      INDEX (from_user),
+      INDEX (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+  
+  await p.execute(`
     CREATE TABLE IF NOT EXISTS message_read (
       message_id VARCHAR(48),
       user_id VARCHAR(48),
@@ -156,6 +168,62 @@ async function getChatsForUser(userId) {
   return chats;
 }
 
+async function getAllUsers() {
+  const p = await getPool();
+  const [rows] = await p.execute('SELECT id, username FROM users');
+  return rows;
+}
+
+// Global chat helpers
+async function createGlobalMessage({ id, from, type = 'text', content }) {
+  const p = await getPool();
+  const createdAt = new Date();
+  const contentJson = JSON.stringify(content === undefined ? null : content);
+  await p.execute('INSERT INTO global_messages (id, from_user, type, content, created_at) VALUES (?, ?, ?, ?, ?)', [id, from, type, contentJson, createdAt]);
+  return findGlobalMessageById(id);
+}
+
+async function findGlobalMessageById(id) {
+  const p = await getPool();
+  const [rows] = await p.execute('SELECT * FROM global_messages WHERE id = ? LIMIT 1', [id]);
+  const msg = rows[0];
+  if (!msg) return null;
+  try { msg.content = typeof msg.content === 'string' ? JSON.parse(msg.content) : (msg.content || null); } catch { msg.content = msg.content || null; }
+  return msg;
+}
+
+async function getLatestGlobalMessages(limit = 50) {
+  const p = await getPool();
+  const l = Math.max(1, Math.min(1000, Number(limit) || 50));
+  const [rows] = await p.execute(`SELECT * FROM global_messages ORDER BY created_at DESC, id DESC LIMIT ${l}`);
+  for (const r of rows) {
+    try { r.content = typeof r.content === 'string' ? JSON.parse(r.content) : (r.content || null); } catch { r.content = r.content || null; }
+  }
+  return rows.reverse();
+}
+
+async function getGlobalMessagesBefore(beforeMessageId, limit = 50) {
+  const p = await getPool();
+  const [beforeRows] = await p.execute('SELECT created_at FROM global_messages WHERE id = ? LIMIT 1', [beforeMessageId]);
+  if (!beforeRows || beforeRows.length === 0) return [];
+  const cutoff = beforeRows[0].created_at;
+  const l = Math.max(1, Math.min(1000, Number(limit) || 50));
+  const [rows] = await p.execute(`SELECT * FROM global_messages WHERE (created_at < ? OR (created_at = ? AND id < ?)) ORDER BY created_at DESC, id DESC LIMIT ${l}`, [cutoff, cutoff, beforeMessageId]);
+  for (const r of rows) {
+    try { r.content = typeof r.content === 'string' ? JSON.parse(r.content) : (r.content || null); } catch { r.content = r.content || null; }
+  }
+  return rows.reverse();
+}
+
+async function getGlobalMessagesSince(since) {
+  const p = await getPool();
+  const [rows] = await p.execute('SELECT * FROM global_messages WHERE created_at > ? ORDER BY created_at ASC', [since]);
+  for (const r of rows) {
+    try { r.content = typeof r.content === 'string' ? JSON.parse(r.content) : (r.content || null); } catch { r.content = r.content || null; }
+  }
+  return rows;
+}
+
 async function findSingleChatBetween(userA, userB) {
   const p = await getPool();
   const [rows] = await p.execute(
@@ -196,7 +264,7 @@ async function findSelfChatForUser(userId) {
 async function createMessage({ id, chatId, from, type, content, repliedTo }) {
   const p = await getPool();
   const createdAt = new Date();
-  const contentJson = typeof content === 'string' ? content : JSON.stringify(content || null);
+  const contentJson = JSON.stringify(content === undefined ? null : content);
   await p.execute('INSERT INTO messages (id, chat_id, from_user, type, content, replied_to, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [id, chatId, from, type, contentJson, repliedTo || null, createdAt]);
   return findMessageById(id);
 }
@@ -206,7 +274,7 @@ async function findMessageById(id) {
   const [rows] = await p.execute('SELECT * FROM messages WHERE id = ? LIMIT 1', [id]);
   const msg = rows[0];
   if (!msg) return null;
-  try { msg.content = msg.content ? JSON.parse(msg.content) : null; } catch { }
+  try { msg.content = typeof msg.content === 'string' ? JSON.parse(msg.content) : (msg.content || null); } catch { msg.content = msg.content || null; }
   return msg;
 }
 
@@ -214,7 +282,7 @@ async function getMessagesForChat(chatId) {
   const p = await getPool();
   const [rows] = await p.execute('SELECT * FROM messages WHERE chat_id = ? ORDER BY created_at ASC', [chatId]);
   for (const r of rows) {
-    try { r.content = r.content ? JSON.parse(r.content) : null; } catch { }
+    try { r.content = typeof r.content === 'string' ? JSON.parse(r.content) : (r.content || null); } catch { r.content = r.content || null; }
   }
   return rows;
 }
@@ -224,9 +292,35 @@ async function getMessagesForChatSince(chatId, since) {
   // since expected to be an ISO string or timestamp; use as-is in query
   const [rows] = await p.execute('SELECT * FROM messages WHERE chat_id = ? AND created_at > ? ORDER BY created_at ASC', [chatId, since]);
   for (const r of rows) {
-    try { r.content = r.content ? JSON.parse(r.content) : null; } catch { }
+    try { r.content = typeof r.content === 'string' ? JSON.parse(r.content) : (r.content || null); } catch { r.content = r.content || null; }
   }
   return rows;
+}
+
+async function getLatestMessagesForChat(chatId, limit = 20) {
+  const p = await getPool();
+  const l = Math.max(1, Math.min(1000, Number(limit) || 20));
+  const [rows] = await p.execute(`SELECT * FROM messages WHERE chat_id = ? ORDER BY created_at DESC, id DESC LIMIT ${l}`, [chatId]);
+  for (const r of rows) {
+    try { r.content = typeof r.content === 'string' ? JSON.parse(r.content) : (r.content || null); } catch { r.content = r.content || null; }
+  }
+  return rows.reverse();
+}
+
+async function getMessagesForChatBefore(chatId, beforeMessageId, limit = 20) {
+  const p = await getPool();
+  const [beforeRows] = await p.execute('SELECT created_at FROM messages WHERE id = ? AND chat_id = ? LIMIT 1', [beforeMessageId, chatId]);
+  if (!beforeRows || beforeRows.length === 0) return [];
+  const cutoff = beforeRows[0].created_at;
+  const l = Math.max(1, Math.min(1000, Number(limit) || 20));
+  const [rows] = await p.execute(
+    `SELECT * FROM messages WHERE chat_id = ? AND (created_at < ? OR (created_at = ? AND id < ?)) ORDER BY created_at DESC, id DESC LIMIT ${l}`,
+    [chatId, cutoff, cutoff, beforeMessageId]
+  );
+  for (const r of rows) {
+    try { r.content = typeof r.content === 'string' ? JSON.parse(r.content) : (r.content || null); } catch { r.content = r.content || null; }
+  }
+  return rows.reverse();
 }
 
 async function markMessageDeleted(messageId) {
@@ -272,6 +366,14 @@ module.exports = {
   getChatsForUser,
   createMessage,
   getMessagesForChat,
+  getLatestMessagesForChat,
+  getMessagesForChatBefore,
+  getAllUsers,
+  createGlobalMessage,
+  findGlobalMessageById,
+  getLatestGlobalMessages,
+  getGlobalMessagesBefore,
+  getGlobalMessagesSince,
   getMessagesForChatSince,
   findMessageById,
   markMessageDeleted,

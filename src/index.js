@@ -7,6 +7,8 @@ const path = require('path');
 const authRoutes = require('./routes/auth');
 const chatRoutes = require('./routes/chats');
 const messageRoutes = require('./routes/messages');
+const usersRoutes = require('./routes/users');
+const globalRoutes = require('./routes/global');
 const http = require('http');
 const db = require('./db');
 const { initSocket } = require('./socket');
@@ -22,6 +24,8 @@ app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 app.use('/auth', authRoutes);
 app.use('/chats', chatRoutes);
 app.use('/messages', messageRoutes);
+app.use('/users', usersRoutes);
+app.use('/global', globalRoutes);
 
 app.get('/me', require('./middleware/auth'), (req, res) => {
   res.json({ user: req.user });

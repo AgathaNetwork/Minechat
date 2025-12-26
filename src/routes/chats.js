@@ -36,13 +36,52 @@ router.get('/', async (req, res) => {
     }
     chats = await db.getChatsForUser(req.user.id);
   }
-  res.json(chats);
+  // enrich chats with displayName
+  const userCache = {};
+  async function getUser(id) {
+    if (!userCache[id]) userCache[id] = db.findUserById(id);
+    return userCache[id];
+  }
+
+  const enriched = await Promise.all(chats.map(async c => {
+    const chat = Object.assign({}, c);
+    if (chat.type === 'group') {
+      chat.displayName = chat.name || '群聊';
+    } else {
+      // single chat: show other user's username, or self
+      const members = chat.members || [];
+      if (members.length === 1) {
+        const u = await getUser(members[0]);
+        chat.displayName = u ? u.username : '我';
+      } else {
+        const otherId = members.find(m => m !== req.user.id) || members[0];
+        const u = await getUser(otherId);
+        chat.displayName = u ? u.username : '对方';
+      }
+    }
+    return chat;
+  }));
+
+  res.json(enriched);
 });
 
 router.get('/:id', async (req, res) => {
   await db.init();
   const chat = await db.getChatById(req.params.id);
   if (!chat || !chat.members.includes(req.user.id)) return res.status(404).json({ error: 'Chat not found' });
+  // compute displayName
+  if (chat.type === 'group') chat.displayName = chat.name || '群聊';
+  else {
+    const members = chat.members || [];
+    if (members.length === 1) {
+      const u = await db.findUserById(members[0]);
+      chat.displayName = u ? u.username : '我';
+    } else {
+      const otherId = members.find(m => m !== req.user.id) || members[0];
+      const u = await db.findUserById(otherId);
+      chat.displayName = u ? u.username : '对方';
+    }
+  }
   res.json(chat);
 });
 
@@ -52,7 +91,17 @@ router.get('/:id/messages', async (req, res) => {
   const chat = await db.getChatById(req.params.id);
   if (!chat || !chat.members.includes(req.user.id)) return res.status(404).json({ error: 'Chat not found' });
   const since = req.query.since;
-  const msgs = since ? await db.getMessagesForChatSince(chat.id, since) : await db.getMessagesForChat(chat.id);
+  const before = req.query.before; // message id to page before (exclusive)
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '20', 10)));
+
+  let msgs;
+  if (since) {
+    msgs = await db.getMessagesForChatSince(chat.id, since);
+  } else if (before) {
+    msgs = await db.getMessagesForChatBefore(chat.id, before, limit);
+  } else {
+    msgs = await db.getLatestMessagesForChat(chat.id, limit);
+  }
   res.json(msgs);
 });
 
@@ -86,6 +135,33 @@ router.post('/:id/messages', upload.single('file'), async (req, res) => {
     io.to(`chat:${chatId}`).emit('message.created', msg);
   } catch (e) { }
   res.json(msg);
+});
+
+// POST /chats/with/:userId - find or create single chat with given user
+router.post('/with/:userId', async (req, res) => {
+  const otherId = req.params.userId;
+  await db.init();
+  if (!otherId) return res.status(400).json({ error: 'Missing userId' });
+  const otherUser = await db.findUserById(otherId);
+  if (!otherUser) return res.status(404).json({ error: 'User not found' });
+
+  // if requesting self, ensure self-chat exists
+  if (otherId === req.user.id) {
+    let self = await db.findSelfChatForUser(req.user.id);
+    if (!self) {
+      const chatId = generateId();
+      self = await db.createChat({ id: chatId, type: 'single', name: null, members: [req.user.id], createdBy: req.user.id });
+    }
+    return res.json({ chatId: self.id, chat: self });
+  }
+
+  // find existing single chat between two users
+  let chat = await db.findSingleChatBetween(req.user.id, otherId);
+  if (!chat) {
+    const chatId = generateId();
+    chat = await db.createChat({ id: chatId, type: 'single', name: null, members: [req.user.id, otherId], createdBy: req.user.id });
+  }
+  res.json({ chatId: chat.id, chat });
 });
 
 module.exports = router;
