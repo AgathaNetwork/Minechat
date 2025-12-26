@@ -105,6 +105,19 @@ async function init() {
       INDEX (expires_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
+
+  await p.execute(`
+    CREATE TABLE IF NOT EXISTS emoji_packs (
+      id VARCHAR(48) PRIMARY KEY,
+      user_id VARCHAR(48),
+      name VARCHAR(255),
+      object_key VARCHAR(512),
+      meta JSON,
+      created_at DATETIME,
+      INDEX (user_id),
+      INDEX (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
 }
 
 // User helpers
@@ -172,6 +185,37 @@ async function getAllUsers() {
   const p = await getPool();
   const [rows] = await p.execute('SELECT id, username FROM users');
   return rows;
+}
+
+// Emoji pack helpers
+async function createEmojiPack({ id, userId, name, key, meta }) {
+  const p = await getPool();
+  const createdAt = new Date();
+  const metaJson = JSON.stringify(meta === undefined ? null : meta);
+  await p.execute('INSERT INTO emoji_packs (id, user_id, name, object_key, meta, created_at) VALUES (?, ?, ?, ?, ?, ?)', [id, userId, name, key, metaJson, createdAt]);
+  const [rows] = await p.execute('SELECT id, user_id, name, object_key AS `key`, meta, created_at FROM emoji_packs WHERE id = ? LIMIT 1', [id]);
+  const r = rows[0];
+  if (!r) return null;
+  try { r.meta = typeof r.meta === 'string' ? JSON.parse(r.meta) : (r.meta || null); } catch { r.meta = r.meta || null; }
+  return r;
+}
+
+async function getEmojiPacksForUser(userId) {
+  const p = await getPool();
+  const [rows] = await p.execute('SELECT id, user_id, name, object_key AS `key`, meta, created_at FROM emoji_packs WHERE user_id = ? ORDER BY created_at DESC', [userId]);
+  for (const r of rows) {
+    try { r.meta = typeof r.meta === 'string' ? JSON.parse(r.meta) : (r.meta || null); } catch { r.meta = r.meta || null; }
+  }
+  return rows;
+}
+
+async function findEmojiPackById(id) {
+  const p = await getPool();
+  const [rows] = await p.execute('SELECT id, user_id, name, object_key AS `key`, meta, created_at FROM emoji_packs WHERE id = ? LIMIT 1', [id]);
+  const r = rows[0];
+  if (!r) return null;
+  try { r.meta = typeof r.meta === 'string' ? JSON.parse(r.meta) : (r.meta || null); } catch { r.meta = r.meta || null; }
+  return r;
 }
 
 // Global chat helpers
@@ -357,27 +401,39 @@ async function deleteSession(id) {
 module.exports = {
   init,
   getPool,
+  // users
   findUserByMsId,
   findUserById,
   createUser,
   updateUsername,
+  getAllUsers,
+  // chats
   createChat,
   getChatById,
   getChatsForUser,
+  findSingleChatBetween,
+  findSelfChatForUser,
+  // messages
   createMessage,
+  findMessageById,
   getMessagesForChat,
+  getMessagesForChatSince,
   getLatestMessagesForChat,
   getMessagesForChatBefore,
-  getAllUsers,
+  markMessageDeleted,
+  addMessageRead,
+  // global messages
   createGlobalMessage,
   findGlobalMessageById,
   getLatestGlobalMessages,
   getGlobalMessagesBefore,
   getGlobalMessagesSince,
-  getMessagesForChatSince,
-  findMessageById,
-  markMessageDeleted,
-  addMessageRead
-  ,createSession, findSessionById, deleteSession,
-  findSingleChatBetween, findSelfChatForUser
+  // emoji packs
+  createEmojiPack,
+  getEmojiPacksForUser,
+  findEmojiPackById,
+  // sessions
+  createSession,
+  findSessionById,
+  deleteSession
 };

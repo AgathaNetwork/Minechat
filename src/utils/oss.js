@@ -20,9 +20,16 @@ function getClient() {
   return client;
 }
 
-async function uploadBuffer({ buffer, filename, contentType }) {
+async function uploadBuffer({ buffer, filename, contentType, prefix } = {}) {
   const c = getClient();
-  const key = `${Date.now()}-${Math.random().toString(36).slice(2,9)}-${filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+  const safeName = (filename || 'file').replace(/[^a-zA-Z0-9._-]/g, '_');
+  const baseKey = `${Date.now()}-${Math.random().toString(36).slice(2,9)}-${safeName}`;
+  // normalize prefix (remove leading/trailing slashes)
+  let key = baseKey;
+  if (prefix) {
+    const clean = String(prefix).replace(/^\/+|\/+$/g, '');
+    if (clean.length > 0) key = `${clean}/${baseKey}`;
+  }
   await c.put(key, buffer, { headers: { 'Content-Type': contentType || 'application/octet-stream' } });
   const signed = (process.env.OSS_SIGNED || 'false').toString() === 'true';
   if (signed) {
