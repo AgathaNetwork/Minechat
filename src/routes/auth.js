@@ -4,12 +4,24 @@ const jwt = require('jsonwebtoken');
 const { generateId } = require('../utils/id');
 const db = require('../db');
 const { getMinecraftProfileFromMsAccessToken } = require('../utils/minecraft');
+const { encodeOssKeyForUrl } = require('../utils/oss');
+const auth = require('../middleware/auth');
 
 const router = express.Router();
 
 const msClientId = process.env.MICROSOFT_CLIENT_ID;
 const msClientSecret = process.env.MICROSOFT_CLIENT_SECRET;
 const redirectUri = process.env.OAUTH_REDIRECT_URI;
+
+function buildPublicUrl(key) {
+  if (!key) return null;
+  const base = process.env.OSS_BASE_URL;
+  if (base && base.length > 0) return base.replace(/\/$/, '') + '/' + encodeOssKeyForUrl(key);
+  if (process.env.OSS_BUCKET && process.env.OSS_ENDPOINT) {
+    return `https://${process.env.OSS_BUCKET}.${process.env.OSS_ENDPOINT}/${encodeOssKeyForUrl(key)}`;
+  }
+  return key;
+}
 
 router.get('/microsoft', (req, res) => {
   const state = generateId();
@@ -79,10 +91,35 @@ router.get('/callback', async (req, res) => {
     // collect all chats for user to return to client
     const chats = await db.getChatsForUser(user.id);
 
-    res.json({ token, user, sessionId, chats });
+    const userWithFace = Object.assign({}, user, { faceUrl: buildPublicUrl(user.face_key) });
+    res.json({ token, user: userWithFace, sessionId, chats });
   } catch (e) {
     console.error(e?.response?.data || e.message);
     res.status(500).json({ error: 'Auth failed', details: e?.message });
+  }
+});
+
+// POST /auth/logout
+// Client calls with credentials: 'include' to send minechat_session cookie.
+router.post('/logout', auth, async (req, res) => {
+  try {
+    await db.init();
+    const sessionId = req.cookies && req.cookies.minechat_session;
+    if (sessionId) {
+      try { await db.deleteSession(sessionId); } catch (e) { }
+    }
+
+    const cookieOptions = {
+      httpOnly: true,
+      sameSite: 'lax'
+    };
+    if ((process.env.COOKIE_SECURE || 'false') === 'true' || process.env.NODE_ENV === 'production') cookieOptions.secure = true;
+
+    res.clearCookie('minechat_session', cookieOptions);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('POST /auth/logout error', e?.message || e);
+    res.status(500).json({ error: 'Logout failed', detail: e?.message || String(e) });
   }
 });
 

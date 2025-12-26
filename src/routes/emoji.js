@@ -3,17 +3,17 @@ const multer = require('multer');
 const { generateId } = require('../utils/id');
 const db = require('../db');
 const auth = require('../middleware/auth');
-const { uploadBuffer } = require('../utils/oss');
+const { uploadBuffer, encodeOssKeyForUrl } = require('../utils/oss');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
 function buildPublicUrl(key) {
   const base = process.env.OSS_BASE_URL;
-  if (base && base.length > 0) return base.replace(/\/$/, '') + '/' + encodeURIComponent(key);
+  if (base && base.length > 0) return base.replace(/\/$/, '') + '/' + encodeOssKeyForUrl(key);
   // fallback to bucket+endpoint (same as uploadBuffer uses)
   if (process.env.OSS_BUCKET && process.env.OSS_ENDPOINT) {
-    return `https://${process.env.OSS_BUCKET}.${process.env.OSS_ENDPOINT}/${encodeURIComponent(key)}`;
+    return `https://${process.env.OSS_BUCKET}.${process.env.OSS_ENDPOINT}/${encodeOssKeyForUrl(key)}`;
   }
   return key;
 }
@@ -33,7 +33,11 @@ router.post('/', upload.single('file'), async (req, res) => {
     res.json(Object.assign({}, pack, { url }));
   } catch (e) {
     console.error('POST /emoji error', e?.message || e);
-    res.status(500).json({ error: 'Internal error' });
+    res.status(500).json({
+      error: 'upload failed',
+      detail: e?.message || String(e),
+      code: e?.code || undefined
+    });
   }
 });
 

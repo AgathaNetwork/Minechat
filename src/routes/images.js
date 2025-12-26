@@ -4,16 +4,16 @@ const Jimp = require('jimp');
 const { generateId } = require('../utils/id');
 const db = require('../db');
 const auth = require('../middleware/auth');
-const { uploadBuffer } = require('../utils/oss');
+const { uploadBuffer, encodeOssKeyForUrl } = require('../utils/oss');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
 function buildPublicUrl(key) {
   const base = process.env.OSS_BASE_URL;
-  if (base && base.length > 0) return base.replace(/\/$/, '') + '/' + encodeURIComponent(key);
+  if (base && base.length > 0) return base.replace(/\/$/, '') + '/' + encodeOssKeyForUrl(key);
   if (process.env.OSS_BUCKET && process.env.OSS_ENDPOINT) {
-    return `https://${process.env.OSS_BUCKET}.${process.env.OSS_ENDPOINT}/${encodeURIComponent(key)}`;
+    return `https://${process.env.OSS_BUCKET}.${process.env.OSS_ENDPOINT}/${encodeOssKeyForUrl(key)}`;
   }
   return key;
 }

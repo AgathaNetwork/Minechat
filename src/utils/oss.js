@@ -2,6 +2,13 @@ const OSS = require('ali-oss');
 
 let client = null;
 
+function encodeOssKeyForUrl(key) {
+  return String(key)
+    .split('/')
+    .map(seg => encodeURIComponent(seg))
+    .join('/');
+}
+
 function getClient() {
   if (client) return client;
   const accessKeyId = process.env.OSS_ACCESS_KEY_ID;
@@ -36,8 +43,21 @@ async function uploadBuffer({ buffer, filename, contentType, prefix } = {}) {
     const url = await c.signatureUrl(key, { expires: parseInt(process.env.OSS_SIGNED_EXPIRES || '3600', 10) });
     return { url, key };
   }
-  const publicUrl = `https://${process.env.OSS_BUCKET}.${process.env.OSS_ENDPOINT}/${encodeURIComponent(key)}`;
+  const publicUrl = `https://${process.env.OSS_BUCKET}.${process.env.OSS_ENDPOINT}/${encodeOssKeyForUrl(key)}`;
   return { url: publicUrl, key };
 }
 
-module.exports = { uploadBuffer, getClient };
+async function putBuffer({ buffer, key, contentType } = {}) {
+  if (!key) throw new Error('putBuffer requires key');
+  const c = getClient();
+  await c.put(key, buffer, { headers: { 'Content-Type': contentType || 'application/octet-stream' } });
+  const signed = (process.env.OSS_SIGNED || 'false').toString() === 'true';
+  if (signed) {
+    const url = await c.signatureUrl(key, { expires: parseInt(process.env.OSS_SIGNED_EXPIRES || '3600', 10) });
+    return { url, key };
+  }
+  const publicUrl = `https://${process.env.OSS_BUCKET}.${process.env.OSS_ENDPOINT}/${encodeOssKeyForUrl(key)}`;
+  return { url: publicUrl, key };
+}
+
+module.exports = { uploadBuffer, putBuffer, getClient, encodeOssKeyForUrl };

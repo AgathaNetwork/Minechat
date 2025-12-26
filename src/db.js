@@ -35,9 +35,17 @@ async function init() {
       ms_id VARCHAR(255) UNIQUE,
       username VARCHAR(191),
       minecraft_id VARCHAR(255),
+      face_key VARCHAR(512),
       created_at DATETIME
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
+
+  // Backward-compatible migration for older databases
+  try {
+    await p.execute('ALTER TABLE users ADD COLUMN face_key VARCHAR(512) NULL');
+  } catch (e) {
+    // ignore if column already exists
+  }
 
   await p.execute(`
     CREATE TABLE IF NOT EXISTS chats (
@@ -59,6 +67,7 @@ async function init() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
 
+    updateUserFaceKey,
   await p.execute(`
     CREATE TABLE IF NOT EXISTS messages (
       id VARCHAR(48) PRIMARY KEY,
@@ -151,13 +160,18 @@ async function findUserById(id) {
 async function createUser({ id, msId, username, minecraftId }) {
   const p = await getPool();
   const createdAt = new Date();
-  await p.execute('INSERT INTO users (id, ms_id, username, minecraft_id, created_at) VALUES (?, ?, ?, ?, ?)', [id, msId, username, minecraftId, createdAt]);
+  await p.execute('INSERT INTO users (id, ms_id, username, minecraft_id, face_key, created_at) VALUES (?, ?, ?, ?, ?, ?)', [id, msId, username, minecraftId, null, createdAt]);
   return findUserById(id);
 }
 
 async function updateUsername(id, username) {
   const p = await getPool();
   await p.execute('UPDATE users SET username = ? WHERE id = ?', [username, id]);
+}
+
+async function updateUserFaceKey(id, faceKey) {
+  const p = await getPool();
+  await p.execute('UPDATE users SET face_key = ? WHERE id = ?', [faceKey, id]);
 }
 
 // Chat helpers
@@ -198,7 +212,7 @@ async function getChatsForUser(userId) {
 
 async function getAllUsers() {
   const p = await getPool();
-  const [rows] = await p.execute('SELECT id, username FROM users');
+  const [rows] = await p.execute('SELECT id, username, face_key FROM users');
   return rows;
 }
 
@@ -452,6 +466,7 @@ module.exports = {
   findUserById,
   createUser,
   updateUsername,
+  updateUserFaceKey,
   getAllUsers,
   // chats
   createChat,
