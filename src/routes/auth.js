@@ -69,7 +69,17 @@ router.get('/callback', async (req, res) => {
     res.cookie('minechat_session', sessionId, cookieOptions);
 
     // return token, user and session id
-    res.json({ token, user, sessionId });
+    // ensure self-chat exists
+    let selfChat = await db.findSelfChatForUser(user.id);
+    if (!selfChat) {
+      const chatId = generateId();
+      selfChat = await db.createChat({ id: chatId, type: 'single', name: null, members: [user.id], createdBy: user.id });
+    }
+
+    // collect all chats for user to return to client
+    const chats = await db.getChatsForUser(user.id);
+
+    res.json({ token, user, sessionId, chats });
   } catch (e) {
     console.error(e?.response?.data || e.message);
     res.status(500).json({ error: 'Auth failed', details: e?.message });

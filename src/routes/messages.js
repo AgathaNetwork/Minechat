@@ -19,8 +19,19 @@ router.post('/:chatId/messages', upload.single('file'), async (req, res) => {
   const { chatId } = req.params;
   const { type = 'text', content, repliedTo } = req.body;
   await db.init();
-  const chat = await db.getChatById(chatId);
-  if (!chat || !chat.members.includes(req.user.id)) return res.status(404).json({ error: 'Chat not found' });
+  let chat = await db.getChatById(chatId);
+  // If chat not found, allow creating a single chat to a target user (toUserId)
+  if (!chat) {
+    const toUserId = req.body.toUserId || req.query.toUserId;
+    if (!toUserId) return res.status(404).json({ error: 'Chat not found' });
+    // find existing single chat between users
+    chat = await db.findSingleChatBetween(req.user.id, toUserId);
+    if (!chat) {
+      const newChatId = generateId();
+      chat = await db.createChat({ id: newChatId, type: 'single', name: null, members: [req.user.id, toUserId], createdBy: req.user.id });
+    }
+  }
+  if (!chat.members.includes(req.user.id)) return res.status(403).json({ error: 'Not member of chat' });
 
   let payload = null;
   if (type === 'file' || req.file) {

@@ -156,6 +156,42 @@ async function getChatsForUser(userId) {
   return chats;
 }
 
+async function findSingleChatBetween(userA, userB) {
+  const p = await getPool();
+  const [rows] = await p.execute(
+    `SELECT c.* FROM chats c
+      WHERE c.type = 'single' AND
+        EXISTS (SELECT 1 FROM chat_members m WHERE m.chat_id = c.id AND m.user_id = ?)
+        AND EXISTS (SELECT 1 FROM chat_members m2 WHERE m2.chat_id = c.id AND m2.user_id = ?)
+      LIMIT 1`,
+    [userA, userB]
+  );
+  const chat = rows[0];
+  if (!chat) return null;
+  const [members] = await p.execute('SELECT user_id FROM chat_members WHERE chat_id = ?', [chat.id]);
+  chat.members = members.map(r => r.user_id);
+  return chat;
+}
+
+async function findSelfChatForUser(userId) {
+  const p = await getPool();
+  const [rows] = await p.execute(
+    `SELECT c.* FROM chats c
+      WHERE c.type = 'single' AND
+        EXISTS (SELECT 1 FROM chat_members m WHERE m.chat_id = c.id AND m.user_id = ?)
+      LIMIT 1`,
+    [userId]
+  );
+  for (const chat of rows) {
+    const [members] = await p.execute('SELECT user_id FROM chat_members WHERE chat_id = ?', [chat.id]);
+    if (members.length === 1 && members[0].user_id === userId) {
+      chat.members = members.map(r => r.user_id);
+      return chat;
+    }
+  }
+  return null;
+}
+
 // Message helpers
 async function createMessage({ id, chatId, from, type, content, repliedTo }) {
   const p = await getPool();
@@ -240,5 +276,6 @@ module.exports = {
   findMessageById,
   markMessageDeleted,
   addMessageRead
-  ,createSession, findSessionById, deleteSession
+  ,createSession, findSessionById, deleteSession,
+  findSingleChatBetween, findSelfChatForUser
 };
