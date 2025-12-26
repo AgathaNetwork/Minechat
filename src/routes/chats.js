@@ -4,6 +4,7 @@ const db = require('../db');
 const auth = require('../middleware/auth');
 const multer = require('multer');
 const { uploadBuffer } = require('../utils/oss');
+const Jimp = require('jimp');
 const { getIo } = require('../socket');
 
 const router = express.Router();
@@ -117,10 +118,49 @@ router.post('/:id/messages', upload.single('file'), async (req, res) => {
 
   let payload = null;
   if (type === 'file' || req.file) {
+    const file = req.file;
     try {
-      const file = req.file;
-      const up = await uploadBuffer({ buffer: file.buffer, filename: file.originalname, contentType: file.mimetype });
-      payload = { url: up.url, filename: file.originalname, mimetype: file.mimetype, key: up.key };
+      if (file.mimetype && file.mimetype.startsWith('image/')) {
+        // convert to PNG and create thumbnail using Jimp
+        const image = await Jimp.read(file.buffer);
+        const pngBuffer = await image.getBufferAsync(Jimp.MIME_PNG);
+        const meta = { width: image.bitmap.width, height: image.bitmap.height };
+        const thumb = image.clone().scaleToFit(400, 400);
+        const thumbBuffer = await thumb.getBufferAsync(Jimp.MIME_PNG);
+        const up = await uploadBuffer({ buffer: pngBuffer, filename: (file.originalname || 'image') + '.png', contentType: 'image/png', prefix: `image/${req.user.id}` });
+        const upThumb = await uploadBuffer({ buffer: thumbBuffer, filename: (file.originalname || 'thumb') + '.png', contentType: 'image/png', prefix: `image_thumbnail/${req.user.id}` });
+        payload = { url: up.url, filename: file.originalname, mimetype: 'image/png', key: up.key, thumbnailUrl: upThumb.url, thumbKey: upThumb.key, meta };
+      } else if (file.mimetype && file.mimetype.startsWith('video/')) {
+        // upload original video and attempt to extract thumbnail
+        const up = await uploadBuffer({ buffer: file.buffer, filename: file.originalname, contentType: file.mimetype, prefix: `video/${req.user.id}` });
+        let thumbInfo = null;
+        try {
+          const ffmpegPath = require('ffmpeg-static');
+          const ffmpeg = require('fluent-ffmpeg');
+          ffmpeg.setFfmpegPath(ffmpegPath);
+          // write temp file then extract a single frame
+          const tmp = require('os').tmpdir();
+          const fs = require('fs');
+          const vidPath = require('path').join(tmp, `${Date.now()}-${Math.random().toString(36).slice(2,8)}-${file.originalname}`);
+          fs.writeFileSync(vidPath, file.buffer);
+          const thumbPath = vidPath + '.png';
+          await new Promise((resolve, reject) => {
+            ffmpeg(vidPath).on('end', resolve).on('error', reject).screenshots({ timestamps: ['1'], filename: require('path').basename(thumbPath), folder: tmp, size: '640x?' });
+          });
+          const thumbBuffer = fs.readFileSync(thumbPath);
+          const upThumb = await uploadBuffer({ buffer: thumbBuffer, filename: (file.originalname || 'thumb') + '.png', contentType: 'image/png', prefix: `video_thumbnail/${req.user.id}` });
+          // cleanup
+          try { fs.unlinkSync(vidPath); fs.unlinkSync(thumbPath); } catch (e) {}
+          thumbInfo = { thumbnailUrl: upThumb.url, thumbKey: upThumb.key };
+        } catch (e) {
+          // ffmpeg not available or failed; skip thumbnail
+          console.warn('video thumbnail generation failed', e?.message || e);
+        }
+        payload = Object.assign({ url: up.url, filename: file.originalname, mimetype: file.mimetype, key: up.key }, thumbInfo || {});
+      } else {
+        const up = await uploadBuffer({ buffer: file.buffer, filename: file.originalname, contentType: file.mimetype, prefix: 'files' });
+        payload = { url: up.url, filename: file.originalname, mimetype: file.mimetype, key: up.key };
+      }
     } catch (e) {
       console.error('OSS upload failed', e.message || e);
       return res.status(500).json({ error: 'File upload failed' });

@@ -118,6 +118,21 @@ async function init() {
       INDEX (created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
+
+  await p.execute(`
+    CREATE TABLE IF NOT EXISTS media (
+      id VARCHAR(48) PRIMARY KEY,
+      owner_id VARCHAR(48),
+      type VARCHAR(64),
+      original_name VARCHAR(255),
+      object_key VARCHAR(512),
+      thumb_key VARCHAR(512),
+      meta JSON,
+      created_at DATETIME,
+      INDEX (owner_id),
+      INDEX (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
 }
 
 // User helpers
@@ -216,6 +231,37 @@ async function findEmojiPackById(id) {
   if (!r) return null;
   try { r.meta = typeof r.meta === 'string' ? JSON.parse(r.meta) : (r.meta || null); } catch { r.meta = r.meta || null; }
   return r;
+}
+
+// Media helpers
+async function createMedia({ id, ownerId, type, originalName, objectKey, thumbKey, meta }) {
+  const p = await getPool();
+  const createdAt = new Date();
+  const metaJson = JSON.stringify(meta === undefined ? null : meta);
+  await p.execute('INSERT INTO media (id, owner_id, type, original_name, object_key, thumb_key, meta, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [id, ownerId, type, originalName, objectKey, thumbKey || null, metaJson, createdAt]);
+  const [rows] = await p.execute('SELECT id, owner_id, type, original_name, object_key AS `key`, thumb_key AS thumbKey, meta, created_at FROM media WHERE id = ? LIMIT 1', [id]);
+  const r = rows[0];
+  if (!r) return null;
+  try { r.meta = typeof r.meta === 'string' ? JSON.parse(r.meta) : (r.meta || null); } catch { r.meta = r.meta || null; }
+  return r;
+}
+
+async function findMediaById(id) {
+  const p = await getPool();
+  const [rows] = await p.execute('SELECT id, owner_id, type, original_name, object_key AS `key`, thumb_key AS thumbKey, meta, created_at FROM media WHERE id = ? LIMIT 1', [id]);
+  const r = rows[0];
+  if (!r) return null;
+  try { r.meta = typeof r.meta === 'string' ? JSON.parse(r.meta) : (r.meta || null); } catch { r.meta = r.meta || null; }
+  return r;
+}
+
+async function getMediaForOwner(ownerId) {
+  const p = await getPool();
+  const [rows] = await p.execute('SELECT id, owner_id, type, original_name, object_key AS `key`, thumb_key AS thumbKey, meta, created_at FROM media WHERE owner_id = ? ORDER BY created_at DESC', [ownerId]);
+  for (const r of rows) {
+    try { r.meta = typeof r.meta === 'string' ? JSON.parse(r.meta) : (r.meta || null); } catch { r.meta = r.meta || null; }
+  }
+  return rows;
 }
 
 // Global chat helpers
@@ -432,6 +478,10 @@ module.exports = {
   createEmojiPack,
   getEmojiPacksForUser,
   findEmojiPackById,
+  // media
+  createMedia,
+  findMediaById,
+  getMediaForOwner,
   // sessions
   createSession,
   findSessionById,
