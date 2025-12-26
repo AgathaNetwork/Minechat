@@ -101,6 +101,19 @@ router.get('/', async (req, res) => {
   }
 });
 
+// GET /users/me - return current user's public info (same shape as /users/:id)
+router.get('/me', auth, async (req, res) => {
+  try {
+    await db.init();
+    const user = await db.findUserById(req.user.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json({ id: user.id, username: user.username, faceUrl: buildPublicUrl(user.face_key) });
+  } catch (e) {
+    console.error('GET /users/me error', e?.message || e);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
 // GET /users/:id - return minimal public user info (id, username)
 router.get('/:id', async (req, res) => {
   try {
