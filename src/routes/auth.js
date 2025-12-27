@@ -12,6 +12,33 @@ const router = express.Router();
 const msClientId = process.env.MICROSOFT_CLIENT_ID;
 const msClientSecret = process.env.MICROSOFT_CLIENT_SECRET;
 const redirectUri = process.env.OAUTH_REDIRECT_URI;
+const frontendLoginRedirect = process.env.FRONTEND_LOGIN_REDIRECT;
+
+function toBase64UrlJson(obj) {
+  const json = JSON.stringify(obj === undefined ? null : obj);
+  return Buffer.from(json, 'utf8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function buildFrontendRedirectUrl({ ok, token, sessionId, user, chats, error, detail }) {
+  if (!frontendLoginRedirect) {
+    throw new Error('Missing FRONTEND_LOGIN_REDIRECT in .env');
+  }
+  const url = new URL(frontendLoginRedirect);
+  url.searchParams.set('ok', ok ? '1' : '0');
+  if (token) url.searchParams.set('token', token);
+  if (sessionId) url.searchParams.set('sessionId', sessionId);
+  if (user && user.id) url.searchParams.set('userId', user.id);
+  if (user && user.username) url.searchParams.set('username', user.username);
+  if (user && user.faceUrl) url.searchParams.set('faceUrl', user.faceUrl);
+  if (chats) url.searchParams.set('chats', toBase64UrlJson(chats));
+  if (error) url.searchParams.set('error', error);
+  if (detail) url.searchParams.set('detail', detail);
+  return url.toString();
+}
 
 function buildPublicUrl(key) {
   if (!key) return null;
@@ -33,7 +60,10 @@ router.get('/microsoft', (req, res) => {
 router.get('/callback', async (req, res) => {
   try {
     const code = req.query.code;
-    if (!code) return res.status(400).json({ error: 'Missing code' });
+    if (!code) {
+      const redir = buildFrontendRedirectUrl({ ok: false, error: 'Missing code' });
+      return res.redirect(302, redir);
+    }
 
     const tokenResp = await axios.post('https://login.microsoftonline.com/consumers/oauth2/v2.0/token', new URLSearchParams({
       client_id: msClientId,
@@ -92,10 +122,17 @@ router.get('/callback', async (req, res) => {
     const chats = await db.getChatsForUser(user.id);
 
     const userWithFace = Object.assign({}, user, { faceUrl: buildPublicUrl(user.face_key) });
-    res.json({ token, user: userWithFace, sessionId, chats });
+
+    const redir = buildFrontendRedirectUrl({ ok: true, token, sessionId, user: userWithFace, chats });
+    return res.redirect(302, redir);
   } catch (e) {
     console.error(e?.response?.data || e.message);
-    res.status(500).json({ error: 'Auth failed', details: e?.message });
+    try {
+      const redir = buildFrontendRedirectUrl({ ok: false, error: 'Auth failed', detail: e?.message || String(e) });
+      return res.redirect(302, redir);
+    } catch (e2) {
+      return res.status(500).json({ error: 'Auth failed', details: e?.message });
+    }
   }
 });
 
