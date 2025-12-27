@@ -6,7 +6,7 @@ const { uploadBuffer } = require('../utils/oss');
 const Jimp = require('jimp');
 const { generateId } = require('../utils/id');
 const db = require('../db');
-const { getIo } = require('../socket');
+const { getIo, emitToUsers, emitToOnlineUsers } = require('../socket');
 const auth = require('../middleware/auth');
 
 const router = express.Router();
@@ -87,6 +87,8 @@ router.post('/:chatId/messages', upload.single('file'), async (req, res) => {
   try {
     const io = getIo();
     io.to(`chat:${chatId}`).emit('message.created', msg);
+    // Also push to each member's socket (user-level realtime)
+    emitToUsers(chat.members || [], 'message.created', msg);
   } catch (e) { }
   res.json(msg);
 });
@@ -99,7 +101,12 @@ router.post('/:messageId/recall', async (req, res) => {
   if (!msg) return res.status(404).json({ error: 'Message not found' });
   if (msg.from_user !== req.user.id) return res.status(403).json({ error: 'Not sender' });
   await db.markMessageDeleted(messageId);
-  try { const io = getIo(); io.to(`chat:${msg.chat_id}`).emit('message.deleted', { id: messageId }); } catch (e) { }
+  try {
+    const io = getIo();
+    io.to(`chat:${msg.chat_id}`).emit('message.deleted', { id: messageId });
+    const chat = await db.getChatById(msg.chat_id);
+    emitToUsers(chat?.members || [], 'message.deleted', { id: messageId, chatId: msg.chat_id });
+  } catch (e) { }
   res.json({ ok: true });
 });
 
@@ -110,7 +117,12 @@ router.post('/:messageId/read', async (req, res) => {
   const msg = await db.findMessageById(messageId);
   if (!msg) return res.status(404).json({ error: 'Message not found' });
   await db.addMessageRead(messageId, req.user.id);
-  try { const io = getIo(); io.to(`chat:${msg.chat_id}`).emit('message.read', { messageId, userId: req.user.id }); } catch (e) { }
+  try {
+    const io = getIo();
+    io.to(`chat:${msg.chat_id}`).emit('message.read', { messageId, userId: req.user.id });
+    const chat = await db.getChatById(msg.chat_id);
+    emitToUsers(chat?.members || [], 'message.read', { messageId, userId: req.user.id, chatId: msg.chat_id });
+  } catch (e) { }
   res.json({ ok: true });
 });
 

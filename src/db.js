@@ -347,21 +347,48 @@ async function findSingleChatBetween(userA, userB) {
 
 async function findSelfChatForUser(userId) {
   const p = await getPool();
+
+  // Find ALL self-chats first so we can deduplicate here.
   const [rows] = await p.execute(
-    `SELECT c.* FROM chats c
-      WHERE c.type = 'single' AND
-        EXISTS (SELECT 1 FROM chat_members m WHERE m.chat_id = c.id AND m.user_id = ?)
-      LIMIT 1`,
+    `SELECT c.id FROM chats c
+      WHERE c.type = 'single'
+        AND EXISTS (SELECT 1 FROM chat_members m WHERE m.chat_id = c.id AND m.user_id = ?)
+        AND (SELECT COUNT(*) FROM chat_members m2 WHERE m2.chat_id = c.id) = 1
+      ORDER BY c.created_at ASC, c.id ASC`,
     [userId]
   );
-  for (const chat of rows) {
-    const [members] = await p.execute('SELECT user_id FROM chat_members WHERE chat_id = ?', [chat.id]);
-    if (members.length === 1 && members[0].user_id === userId) {
-      chat.members = members.map(r => r.user_id);
-      return chat;
+
+  if (!rows || rows.length === 0) return null;
+  const keepId = rows[0].id;
+
+  // If there are duplicates, migrate messages into the kept chat and remove extras.
+  if (rows.length > 1) {
+    const dupIds = rows.slice(1).map(r => r.id);
+    const conn = await p.getConnection();
+    try {
+      await conn.beginTransaction();
+      for (const dupId of dupIds) {
+        // Move messages over so no history is lost.
+        await conn.execute('UPDATE messages SET chat_id = ? WHERE chat_id = ?', [keepId, dupId]);
+
+        // Ensure membership exists on kept chat (safe no-op due to PK).
+        await conn.execute('INSERT IGNORE INTO chat_members (chat_id, user_id) SELECT ?, user_id FROM chat_members WHERE chat_id = ?', [keepId, dupId]);
+
+        // Remove duplicate chat + members.
+        await conn.execute('DELETE FROM chat_members WHERE chat_id = ?', [dupId]);
+        await conn.execute('DELETE FROM chats WHERE id = ?', [dupId]);
+      }
+      await conn.commit();
+    } catch (e) {
+      try { await conn.rollback(); } catch (e2) { }
+      // If cleanup fails, we still return a valid self chat.
+      console.warn('self-chat dedupe failed', e?.message || e);
+    } finally {
+      conn.release();
     }
   }
-  return null;
+
+  return getChatById(keepId);
 }
 
 // Message helpers

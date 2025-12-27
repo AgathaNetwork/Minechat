@@ -5,7 +5,7 @@ const auth = require('../middleware/auth');
 const multer = require('multer');
 const { uploadBuffer } = require('../utils/oss');
 const Jimp = require('jimp');
-const { getIo } = require('../socket');
+const { getIo, emitToUsers } = require('../socket');
 
 const router = express.Router();
 
@@ -27,16 +27,26 @@ router.post('/', async (req, res) => {
 
 router.get('/', async (req, res) => {
   await db.init();
-  let chats = await db.getChatsForUser(req.user.id);
-  if (!chats || chats.length === 0) {
-    // ensure a self-chat exists
-    let self = await db.findSelfChatForUser(req.user.id);
-    if (!self) {
-      const chatId = generateId();
-      self = await db.createChat({ id: chatId, type: 'single', name: null, members: [req.user.id], createdBy: req.user.id });
-    }
-    chats = await db.getChatsForUser(req.user.id);
+  // Always ensure a self-chat exists (even if user already has other chats)
+  let self = await db.findSelfChatForUser(req.user.id);
+  if (!self) {
+    const chatId = generateId();
+    self = await db.createChat({ id: chatId, type: 'single', name: null, members: [req.user.id], createdBy: req.user.id });
   }
+
+  let chats = await db.getChatsForUser(req.user.id);
+
+  // De-duplicate historical self-chats (keep the first one we see)
+  let keptSelf = false;
+  chats = (chats || []).filter(c => {
+    if (c.type !== 'single') return true;
+    const members = c.members || [];
+    const isSelf = members.length === 1 && members[0] === req.user.id;
+    if (!isSelf) return true;
+    if (keptSelf) return false;
+    keptSelf = true;
+    return true;
+  });
   // enrich chats with displayName
   const userCache = {};
   async function getUser(id) {
@@ -173,6 +183,7 @@ router.post('/:id/messages', upload.single('file'), async (req, res) => {
   try {
     const io = getIo();
     io.to(`chat:${chatId}`).emit('message.created', msg);
+    emitToUsers(chat.members || [], 'message.created', msg);
   } catch (e) { }
   res.json(msg);
 });

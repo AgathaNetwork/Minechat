@@ -2,7 +2,7 @@ const express = require('express');
 const { generateId } = require('../utils/id');
 const db = require('../db');
 const auth = require('../middleware/auth');
-const { getIo } = require('../socket');
+const { getIo, emitToOnlineUsers } = require('../socket');
 
 const router = express.Router();
 
@@ -34,7 +34,11 @@ router.post('/messages', async (req, res) => {
     if (!content || typeof content !== 'string') return res.status(400).json({ error: 'content (string) required' });
     // only text allowed currently; reserve 'content' as structured JSON for future types
     const msg = await db.createGlobalMessage({ id: generateId(), from: req.user.id, type: 'text', content: { text: content } });
-    try { getIo().emit('global.message.created', msg); } catch (e) { }
+    try {
+      getIo().emit('global.message.created', msg);
+      // For user-level realtime: push to each online user's socket
+      emitToOnlineUsers('global.message.created', msg);
+    } catch (e) { }
     res.json(msg);
   } catch (e) {
     console.error('POST /global/messages error', e?.message || e);
