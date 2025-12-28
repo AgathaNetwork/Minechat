@@ -92,6 +92,7 @@ router.get('/', async (req, res) => {
     const mapped = (users || []).map(u => ({
       id: u.id,
       username: u.username,
+      minecraftUuid: u.minecraft_id,
       faceUrl: buildPublicUrl(u.face_key)
     }));
     res.json(mapped);
@@ -107,7 +108,7 @@ router.get('/me', auth, async (req, res) => {
     await db.init();
     const user = await db.findUserById(req.user.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
-    res.json({ id: user.id, username: user.username, faceUrl: buildPublicUrl(user.face_key) });
+    res.json({ id: user.id, username: user.username, minecraftUuid: user.minecraft_id, faceUrl: buildPublicUrl(user.face_key) });
   } catch (e) {
     console.error('GET /users/me error', e?.message || e);
     res.status(500).json({ error: 'Internal error' });
@@ -120,7 +121,7 @@ router.get('/:id', async (req, res) => {
     await db.init();
     const user = await db.findUserById(req.params.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
-    res.json({ id: user.id, username: user.username, faceUrl: buildPublicUrl(user.face_key) });
+    res.json({ id: user.id, username: user.username, minecraftUuid: user.minecraft_id, faceUrl: buildPublicUrl(user.face_key) });
   } catch (e) {
     console.error('GET /users/:id error', e?.message || e);
     res.status(500).json({ error: 'Internal error' });

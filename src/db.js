@@ -236,7 +236,7 @@ async function getChatsForUser(userId) {
 
 async function getAllUsers() {
   const p = await getPool();
-  const [rows] = await p.execute('SELECT id, username, face_key FROM users');
+  const [rows] = await p.execute('SELECT id, username, minecraft_id, face_key FROM users');
   return rows;
 }
 
