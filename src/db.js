@@ -211,6 +211,24 @@ async function getChatsForUser(userId) {
   for (const c of rows) {
     const [members] = await p.execute('SELECT user_id FROM chat_members WHERE chat_id = ?', [c.id]);
     c.members = members.map(r => r.user_id);
+    
+    // Get the latest message for this chat
+    const [latestMsg] = await p.execute(
+      'SELECT * FROM messages WHERE chat_id = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1',
+      [c.id]
+    );
+    if (latestMsg.length > 0) {
+      const msg = latestMsg[0];
+      try {
+        msg.content = typeof msg.content === 'string' ? JSON.parse(msg.content) : (msg.content || null);
+      } catch {
+        msg.content = msg.content || null;
+      }
+      c.lastMessage = msg;
+    } else {
+      c.lastMessage = null;
+    }
+    
     chats.push(c);
   }
   return chats;
