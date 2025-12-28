@@ -79,12 +79,11 @@ router.get('/callback', async (req, res) => {
     const profile = await getMinecraftProfileFromMsAccessToken(accessToken);
 
     await db.init();
-    // Use Microsoft account subject as stable id; fallback to truncated access token
-    const msSub = tokenResp.data.id_token || accessToken.substring(0, 12);
-    let user = await db.findUserByMsId(msSub);
+    // Use Minecraft UUID as stable user identifier
+    let user = await db.findUserByMinecraftId(profile.id);
     if (!user) {
       const id = generateId();
-      await db.createUser({ id, msId: msSub, username: profile.name, minecraftId: profile.id });
+      await db.createUser({ id, msId: null, username: profile.name, minecraftId: profile.id });
       user = await db.findUserById(id);
     } else {
       if (user.username !== profile.name) {
