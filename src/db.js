@@ -52,11 +52,19 @@ async function init() {
       id VARCHAR(48) PRIMARY KEY,
       type VARCHAR(32),
       name VARCHAR(255),
+      avatar_key VARCHAR(512),
       created_by VARCHAR(48),
       created_at DATETIME,
       INDEX (created_by)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
+
+  // Backward-compatible migration for older databases
+  try {
+    await p.execute('ALTER TABLE chats ADD COLUMN avatar_key VARCHAR(512) NULL');
+  } catch (e) {
+    // ignore if column already exists
+  }
 
   await p.execute(`
     CREATE TABLE IF NOT EXISTS chat_members (
@@ -522,6 +530,12 @@ async function updateChatName(chatId, name) {
   return getChatById(chatId);
 }
 
+async function updateChatAvatarKey(chatId, avatarKey) {
+  const p = await getPool();
+  await p.execute('UPDATE chats SET avatar_key = ? WHERE id = ?', [avatarKey, chatId]);
+  return getChatById(chatId);
+}
+
 async function getChatAdmins(chatId) {
   const p = await getPool();
   const [rows] = await p.execute('SELECT user_id FROM chat_admins WHERE chat_id = ? ORDER BY created_at ASC, user_id ASC', [chatId]);
@@ -663,6 +677,7 @@ module.exports = {
   findSingleChatBetween,
   findSelfChatForUser,
   updateChatName,
+  updateChatAvatarKey,
   // group management
   getChatAdmins,
   isChatAdmin,

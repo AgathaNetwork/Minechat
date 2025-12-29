@@ -3,13 +3,31 @@ const { generateId } = require('../utils/id');
 const db = require('../db');
 const auth = require('../middleware/auth');
 const multer = require('multer');
-const { uploadBuffer } = require('../utils/oss');
+const { uploadBuffer, putBuffer, encodeOssKeyForUrl } = require('../utils/oss');
 const Jimp = require('jimp');
 const { getIo, emitToUsers } = require('../socket');
 
 const router = express.Router();
 
 router.use(auth);
+
+const upload = multer({ storage: multer.memoryStorage() });
+
+function buildPublicUrl(key) {
+  if (!key) return null;
+  const base = process.env.OSS_BASE_URL;
+  if (base && base.length > 0) return base.replace(/\/$/, '') + '/' + encodeOssKeyForUrl(key);
+  if (process.env.OSS_BUCKET && process.env.OSS_ENDPOINT) {
+    return `https://${process.env.OSS_BUCKET}.${process.env.OSS_ENDPOINT}/${encodeOssKeyForUrl(key)}`;
+  }
+  return key;
+}
+
+function attachChatAvatar(chat) {
+  if (!chat) return chat;
+  chat.avatarUrl = buildPublicUrl(chat.avatar_key);
+  return chat;
+}
 
 async function loadChatAsMember(req, res) {
   const chat = await db.getChatById(req.params.id);
@@ -50,6 +68,8 @@ router.post('/group', async (req, res) => {
       createdBy: req.user.id
     });
 
+    attachChatAvatar(chat);
+
     try {
       emitToUsers(chat.members || uniqueMembers, 'chat.created', { chat });
     } catch (e) {}
@@ -72,6 +92,8 @@ router.post('/', async (req, res) => {
     members: uniqueMembers,
     createdBy: req.user.id
   });
+
+  attachChatAvatar(chat);
 
   if (chat && chat.type === 'group') {
     try {
@@ -112,6 +134,7 @@ router.get('/', async (req, res) => {
 
   const enriched = await Promise.all(chats.map(async c => {
     const chat = Object.assign({}, c);
+    attachChatAvatar(chat);
     if (chat.type === 'group') {
       chat.displayName = chat.name || '群聊';
     } else {
@@ -178,6 +201,7 @@ router.post('/:id/invite', async (req, res) => {
     if (toAdd.length === 0) return res.json({ chat, added: [] });
 
     const updated = await db.addChatMembers(chat.id, toAdd);
+    attachChatAvatar(updated);
 
     try {
       emitToUsers(updated.members || [], 'chat.members.added', { chatId: chat.id, userIds: toAdd });
@@ -220,6 +244,7 @@ router.post('/:id/kick', async (req, res) => {
     if (toRemove.length === 0) return res.json({ chat, removed: [] });
 
     const updated = await db.removeChatMembers(chat.id, toRemove);
+    attachChatAvatar(updated);
 
     try {
       // Notify remaining members + removed users
@@ -342,6 +367,7 @@ router.post('/:id/transfer', async (req, res) => {
     if (!chat.members.includes(newOwnerId)) return res.status(400).json({ error: 'New owner must be a member' });
 
     const updated = await db.transferChatOwner(chat.id, newOwnerId);
+    attachChatAvatar(updated);
     try {
       emitToUsers(updated.members || [], 'chat.owner.changed', { chatId: chat.id, ownerId: newOwnerId });
       emitToUsers(updated.members || [], 'chat.updated', { chat: updated });
@@ -373,8 +399,55 @@ router.get('/:id/messages', async (req, res) => {
   res.json(msgs);
 });
 
+// POST /chats/:id/avatar - set group avatar (owner/admin only)
+router.post('/:id/avatar', upload.single('file'), async (req, res) => {
+  try {
+    await db.init();
+    const chat = await loadChatAsMember(req, res);
+    if (!chat) return;
+    if (chat.type !== 'group') return res.status(400).json({ error: 'Only group chats support avatar' });
+
+    const { isOwner, isAdmin } = await getGroupRole(chat, req.user.id);
+    if (!isOwner && !isAdmin) return res.status(403).json({ error: 'No permission' });
+
+    const file = req.file;
+    if (!file || !file.buffer) return res.status(400).json({ error: 'Missing file' });
+    if (file.mimetype && !file.mimetype.startsWith('image/')) {
+      return res.status(400).json({ error: 'Avatar must be an image' });
+    }
+
+    const image = await Jimp.read(file.buffer);
+    const w = image.bitmap.width;
+    const h = image.bitmap.height;
+    if (!w || !h) return res.status(400).json({ error: 'Invalid image' });
+
+    const size = Math.min(w, h);
+    const x = Math.floor((w - size) / 2);
+    const y = Math.floor((h - size) / 2);
+
+    image.crop(x, y, size, size);
+    image.resize(256, 256, Jimp.RESIZE_BILINEAR);
+    const pngBuffer = await image.getBufferAsync(Jimp.MIME_PNG);
+
+    const key = `group_avatar/${chat.id}.png`;
+    await putBuffer({ buffer: pngBuffer, key, contentType: 'image/png' });
+
+    const updated = await db.updateChatAvatarKey(chat.id, key);
+    attachChatAvatar(updated);
+
+    try {
+      emitToUsers(updated.members || [], 'chat.updated', { chat: updated });
+      emitToUsers(updated.members || [], 'chat.avatar.updated', { chatId: updated.id, avatarKey: key, avatarUrl: updated.avatarUrl, chat: updated });
+    } catch (e) {}
+
+    res.json(updated);
+  } catch (e) {
+    console.error('POST /chats/:id/avatar error', e?.message || e);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
 // Send message to chat via /chats/:id/messages (proxy to messages logic)
-const upload = multer({ storage: multer.memoryStorage() });
 router.post('/:id/messages', upload.single('file'), async (req, res) => {
   const chatId = req.params.id;
   const { type = 'text', content, repliedTo } = req.body;
@@ -450,6 +523,7 @@ router.get('/:id', async (req, res) => {
   await db.init();
   const chat = await db.getChatById(req.params.id);
   if (!chat || !chat.members.includes(req.user.id)) return res.status(404).json({ error: 'Chat not found' });
+  attachChatAvatar(chat);
   // compute displayName
   if (chat.type === 'group') chat.displayName = chat.name || '群聊';
   else {
@@ -479,6 +553,7 @@ router.patch('/:id', async (req, res) => {
 
     const { name } = req.body || {};
     const updated = await db.updateChatName(chat.id, typeof name === 'string' ? name : null);
+    attachChatAvatar(updated);
 
     try {
       emitToUsers(updated.members || [], 'chat.updated', { chat: updated });
