@@ -484,6 +484,23 @@ async function markMessageDeleted(messageId) {
   await p.execute('UPDATE messages SET deleted_at = ? WHERE id = ?', [deletedAt, messageId]);
 }
 
+async function recallMessage(messageId, recalledBy) {
+  const p = await getPool();
+  const existing = await findMessageById(messageId);
+  if (!existing) return null;
+
+  const recalledAt = new Date().toISOString();
+  const contentJson = JSON.stringify({
+    recalled: true,
+    recalledBy,
+    recalledAt,
+    originalType: existing.type
+  });
+
+  await p.execute('UPDATE messages SET type = ?, content = ? WHERE id = ?', ['recalled', contentJson, messageId]);
+  return findMessageById(messageId);
+}
+
 async function addMessageRead(messageId, userId) {
   const p = await getPool();
   await p.execute('INSERT IGNORE INTO message_read (message_id, user_id) VALUES (?, ?)', [messageId, userId]);
@@ -534,6 +551,7 @@ module.exports = {
   getLatestMessagesForChat,
   getMessagesForChatBefore,
   markMessageDeleted,
+  recallMessage,
   addMessageRead,
   // global messages
   createGlobalMessage,

@@ -100,14 +100,21 @@ router.post('/:messageId/recall', async (req, res) => {
   const msg = await db.findMessageById(messageId);
   if (!msg) return res.status(404).json({ error: 'Message not found' });
   if (msg.from_user !== req.user.id) return res.status(403).json({ error: 'Not sender' });
-  await db.markMessageDeleted(messageId);
+  const chat = await db.getChatById(msg.chat_id);
+  if (!chat || !chat.members.includes(req.user.id)) return res.status(404).json({ error: 'Chat not found' });
+
+  // Update the original message row: change its type to "recalled".
+  const updated = await db.recallMessage(messageId, req.user.id);
+  if (!updated) return res.status(404).json({ error: 'Message not found' });
   try {
     const io = getIo();
-    io.to(`chat:${msg.chat_id}`).emit('message.deleted', { id: messageId });
-    const chat = await db.getChatById(msg.chat_id);
-    emitToUsers(chat?.members || [], 'message.deleted', { id: messageId, chatId: msg.chat_id });
+    // Notify clients to update the existing message in-place.
+    io.to(`chat:${msg.chat_id}`).emit('message.recalled', { chatId: msg.chat_id, message: updated });
+    emitToUsers(chat?.members || [], 'message.recalled', { chatId: msg.chat_id, message: updated });
+    io.to(`chat:${msg.chat_id}`).emit('message.updated', { chatId: msg.chat_id, message: updated });
+    emitToUsers(chat?.members || [], 'message.updated', { chatId: msg.chat_id, message: updated });
   } catch (e) { }
-  res.json({ ok: true });
+  res.json({ ok: true, message: updated });
 });
 
 // Mark message as read by current user
