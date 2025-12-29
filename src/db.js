@@ -67,7 +67,16 @@ async function init() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
 
-    updateUserFaceKey,
+  await p.execute(`
+    CREATE TABLE IF NOT EXISTS chat_admins (
+      chat_id VARCHAR(48),
+      user_id VARCHAR(48),
+      created_at DATETIME,
+      PRIMARY KEY (chat_id, user_id),
+      INDEX (user_id),
+      INDEX (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
   await p.execute(`
     CREATE TABLE IF NOT EXISTS messages (
       id VARCHAR(48) PRIMARY KEY,
@@ -506,6 +515,97 @@ async function addMessageRead(messageId, userId) {
   await p.execute('INSERT IGNORE INTO message_read (message_id, user_id) VALUES (?, ?)', [messageId, userId]);
 }
 
+// Group management helpers
+async function updateChatName(chatId, name) {
+  const p = await getPool();
+  await p.execute('UPDATE chats SET name = ? WHERE id = ?', [name, chatId]);
+  return getChatById(chatId);
+}
+
+async function getChatAdmins(chatId) {
+  const p = await getPool();
+  const [rows] = await p.execute('SELECT user_id FROM chat_admins WHERE chat_id = ? ORDER BY created_at ASC, user_id ASC', [chatId]);
+  return (rows || []).map(r => r.user_id);
+}
+
+async function isChatAdmin(chatId, userId) {
+  const p = await getPool();
+  const [rows] = await p.execute('SELECT 1 FROM chat_admins WHERE chat_id = ? AND user_id = ? LIMIT 1', [chatId, userId]);
+  return !!(rows && rows[0]);
+}
+
+async function addChatAdmin(chatId, userId) {
+  const p = await getPool();
+  const createdAt = new Date();
+  await p.execute('INSERT IGNORE INTO chat_admins (chat_id, user_id, created_at) VALUES (?, ?, ?)', [chatId, userId, createdAt]);
+  return getChatAdmins(chatId);
+}
+
+async function removeChatAdmin(chatId, userId) {
+  const p = await getPool();
+  await p.execute('DELETE FROM chat_admins WHERE chat_id = ? AND user_id = ?', [chatId, userId]);
+  return getChatAdmins(chatId);
+}
+
+async function replaceChatAdmins(chatId, userIds) {
+  const p = await getPool();
+  const conn = await p.getConnection();
+  try {
+    await conn.beginTransaction();
+    await conn.execute('DELETE FROM chat_admins WHERE chat_id = ?', [chatId]);
+    const createdAt = new Date();
+    const unique = Array.from(new Set(Array.isArray(userIds) ? userIds : [])).filter(Boolean);
+    for (const uid of unique) {
+      await conn.execute('INSERT IGNORE INTO chat_admins (chat_id, user_id, created_at) VALUES (?, ?, ?)', [chatId, uid, createdAt]);
+    }
+    await conn.commit();
+  } catch (e) {
+    try { await conn.rollback(); } catch (e2) {}
+    throw e;
+  } finally {
+    conn.release();
+  }
+  return getChatAdmins(chatId);
+}
+
+async function addChatMembers(chatId, userIds) {
+  const p = await getPool();
+  const unique = Array.from(new Set(Array.isArray(userIds) ? userIds : [])).filter(Boolean);
+  if (unique.length === 0) return getChatById(chatId);
+  const inserts = unique.map(uid => p.execute('INSERT IGNORE INTO chat_members (chat_id, user_id) VALUES (?, ?)', [chatId, uid]));
+  await Promise.all(inserts);
+  return getChatById(chatId);
+}
+
+async function removeChatMembers(chatId, userIds) {
+  const p = await getPool();
+  const unique = Array.from(new Set(Array.isArray(userIds) ? userIds : [])).filter(Boolean);
+  if (unique.length === 0) return getChatById(chatId);
+  const conn = await p.getConnection();
+  try {
+    await conn.beginTransaction();
+    for (const uid of unique) {
+      await conn.execute('DELETE FROM chat_members WHERE chat_id = ? AND user_id = ?', [chatId, uid]);
+      await conn.execute('DELETE FROM chat_admins WHERE chat_id = ? AND user_id = ?', [chatId, uid]);
+    }
+    await conn.commit();
+  } catch (e) {
+    try { await conn.rollback(); } catch (e2) {}
+    throw e;
+  } finally {
+    conn.release();
+  }
+  return getChatById(chatId);
+}
+
+async function transferChatOwner(chatId, newOwnerId) {
+  const p = await getPool();
+  // Ensure new owner is a member.
+  await p.execute('INSERT IGNORE INTO chat_members (chat_id, user_id) VALUES (?, ?)', [chatId, newOwnerId]);
+  await p.execute('UPDATE chats SET created_by = ? WHERE id = ?', [newOwnerId, chatId]);
+  return getChatById(chatId);
+}
+
 // Session helpers
 async function createSession({ id, userId, expiresAt }) {
   const p = await getPool();
@@ -543,6 +643,16 @@ module.exports = {
   getChatsForUser,
   findSingleChatBetween,
   findSelfChatForUser,
+  updateChatName,
+  // group management
+  getChatAdmins,
+  isChatAdmin,
+  addChatAdmin,
+  removeChatAdmin,
+  replaceChatAdmins,
+  addChatMembers,
+  removeChatMembers,
+  transferChatOwner,
   // messages
   createMessage,
   findMessageById,
