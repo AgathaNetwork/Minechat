@@ -457,6 +457,8 @@ router.post('/:id/messages', upload.single('file'), async (req, res) => {
   if (!chat.members.includes(req.user.id)) return res.status(403).json({ error: 'Not member of chat' });
 
   let payload = null;
+  let mentionAll = false;
+  let mentionUserIds = [];
   if (type === 'file' || req.file) {
     const file = req.file;
     try {
@@ -509,11 +511,79 @@ router.post('/:id/messages', upload.single('file'), async (req, res) => {
     try { payload = content ? JSON.parse(content) : null; } catch { payload = content; }
   }
 
-  const msg = await db.createMessage({ id: generateId(), chatId, from: req.user.id, type, content: payload, repliedTo });
+  // Mentions (@) are part of text message content, passed from frontend.
+  // Supported shapes:
+  // - content: "hello" (string) -> no mentions
+  // - content: { text: "...", mentions: [{ userId }], mentionAll: true }
+  if (!req.file && type === 'text') {
+    const obj = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : null;
+    if (obj) {
+      // mentionAll can be a boolean or represented as a special mention item
+      mentionAll = obj.mentionAll === true;
+      const rawMentions = Array.isArray(obj.mentions) ? obj.mentions : [];
+      if (!mentionAll) {
+        mentionAll = rawMentions.some(m => m && (m.type === 'all' || m.kind === 'all'));
+      }
+
+      const rawUserIds = rawMentions
+        .map(m => (m && typeof m === 'object') ? m.userId : null)
+        .filter(Boolean);
+
+      mentionUserIds = Array.from(new Set(rawUserIds)).filter(uid => uid !== req.user.id);
+
+      // Basic anti-abuse limit
+      if (mentionUserIds.length > 50) {
+        return res.status(400).json({ error: 'Too many mentions' });
+      }
+
+      // Mention feature is for group chat
+      if ((mentionAll || mentionUserIds.length > 0) && chat.type !== 'group') {
+        return res.status(400).json({ error: 'Mentions are only supported in group chats' });
+      }
+
+      // Validate mentioned users are members
+      const memberSet = new Set(chat.members || []);
+      for (const uid of mentionUserIds) {
+        if (!memberSet.has(uid)) {
+          return res.status(400).json({ error: 'Mentioned user must be a member', userId: uid });
+        }
+      }
+
+      // Validate @all permission (owner/admin only)
+      if (mentionAll) {
+        const role = await getGroupRole(chat, req.user.id);
+        if (!role.canManage) return res.status(403).json({ error: 'Only owner/admin can use @all' });
+      }
+    }
+  }
+
+  const messageId = generateId();
+  const msg = await db.createMessage({ id: messageId, chatId, from: req.user.id, type, content: payload, repliedTo });
   try {
     const io = getIo();
     io.to(`chat:${chatId}`).emit('message.created', msg);
     emitToUsers(chat.members || [], 'message.created', msg);
+
+    // Mention notification (socket only; no schema changes)
+    if (type === 'text' && !req.file) {
+      if (mentionAll) {
+        const targets = (chat.members || []).filter(uid => uid !== req.user.id);
+        emitToUsers(targets, 'message.mentioned', {
+          chatId,
+          messageId: msg.id,
+          fromUser: req.user.id,
+          all: true
+        });
+      }
+      if (mentionUserIds && mentionUserIds.length > 0) {
+        emitToUsers(mentionUserIds, 'message.mentioned', {
+          chatId,
+          messageId: msg.id,
+          fromUser: req.user.id,
+          mentionedUserIds: mentionUserIds
+        });
+      }
+    }
   } catch (e) { }
   res.json(msg);
 });
