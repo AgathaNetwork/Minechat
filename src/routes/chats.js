@@ -122,49 +122,31 @@ router.get('/', async (req, res) => {
   res.json(enriched);
 });
 
-router.get('/:id', async (req, res) => {
+// POST /chats/with/:userId - find or create single chat with given user
+router.post('/with/:userId', async (req, res) => {
+  const otherId = req.params.userId;
   await db.init();
-  const chat = await db.getChatById(req.params.id);
-  if (!chat || !chat.members.includes(req.user.id)) return res.status(404).json({ error: 'Chat not found' });
-  // compute displayName
-  if (chat.type === 'group') chat.displayName = chat.name || '群聊';
-  else {
-    const members = chat.members || [];
-    if (members.length === 1) {
-      const u = await db.findUserById(members[0]);
-      chat.displayName = u ? u.username : '我';
-    } else {
-      const otherId = members.find(m => m !== req.user.id) || members[0];
-      const u = await db.findUserById(otherId);
-      chat.displayName = u ? u.username : '对方';
+  if (!otherId) return res.status(400).json({ error: 'Missing userId' });
+  const otherUser = await db.findUserById(otherId);
+  if (!otherUser) return res.status(404).json({ error: 'User not found' });
+
+  // if requesting self, ensure self-chat exists
+  if (otherId === req.user.id) {
+    let self = await db.findSelfChatForUser(req.user.id);
+    if (!self) {
+      const chatId = generateId();
+      self = await db.createChat({ id: chatId, type: 'single', name: null, members: [req.user.id], createdBy: req.user.id });
     }
+    return res.json({ chatId: self.id, chat: self });
   }
-  res.json(chat);
-});
 
-// PATCH /chats/:id - update group chat info (currently: name)
-router.patch('/:id', async (req, res) => {
-  try {
-    await db.init();
-    const chat = await loadChatAsMember(req, res);
-    if (!chat) return;
-    if (chat.type !== 'group') return res.status(400).json({ error: 'Only group chats support updates' });
-
-    const { isOwner, isAdmin } = await getGroupRole(chat, req.user.id);
-    if (!isOwner && !isAdmin) return res.status(403).json({ error: 'No permission' });
-
-    const { name } = req.body || {};
-    const updated = await db.updateChatName(chat.id, typeof name === 'string' ? name : null);
-
-    try {
-      emitToUsers(updated.members || [], 'chat.updated', { chat: updated });
-    } catch (e) {}
-
-    res.json(updated);
-  } catch (e) {
-    console.error('PATCH /chats/:id error', e?.message || e);
-    res.status(500).json({ error: 'Internal error' });
+  // find existing single chat between two users
+  let chat = await db.findSingleChatBetween(req.user.id, otherId);
+  if (!chat) {
+    const chatId = generateId();
+    chat = await db.createChat({ id: chatId, type: 'single', name: null, members: [req.user.id, otherId], createdBy: req.user.id });
   }
+  res.json({ chatId: chat.id, chat });
 });
 
 // POST /chats/:id/invite - invite new members to group
@@ -453,31 +435,50 @@ router.post('/:id/messages', upload.single('file'), async (req, res) => {
   res.json(msg);
 });
 
-// POST /chats/with/:userId - find or create single chat with given user
-router.post('/with/:userId', async (req, res) => {
-  const otherId = req.params.userId;
+// GET /chats/:id - placed AFTER all /:id/* routes to avoid interception
+router.get('/:id', async (req, res) => {
   await db.init();
-  if (!otherId) return res.status(400).json({ error: 'Missing userId' });
-  const otherUser = await db.findUserById(otherId);
-  if (!otherUser) return res.status(404).json({ error: 'User not found' });
-
-  // if requesting self, ensure self-chat exists
-  if (otherId === req.user.id) {
-    let self = await db.findSelfChatForUser(req.user.id);
-    if (!self) {
-      const chatId = generateId();
-      self = await db.createChat({ id: chatId, type: 'single', name: null, members: [req.user.id], createdBy: req.user.id });
+  const chat = await db.getChatById(req.params.id);
+  if (!chat || !chat.members.includes(req.user.id)) return res.status(404).json({ error: 'Chat not found' });
+  // compute displayName
+  if (chat.type === 'group') chat.displayName = chat.name || '群聊';
+  else {
+    const members = chat.members || [];
+    if (members.length === 1) {
+      const u = await db.findUserById(members[0]);
+      chat.displayName = u ? u.username : '我';
+    } else {
+      const otherId = members.find(m => m !== req.user.id) || members[0];
+      const u = await db.findUserById(otherId);
+      chat.displayName = u ? u.username : '对方';
     }
-    return res.json({ chatId: self.id, chat: self });
   }
+  res.json(chat);
+});
 
-  // find existing single chat between two users
-  let chat = await db.findSingleChatBetween(req.user.id, otherId);
-  if (!chat) {
-    const chatId = generateId();
-    chat = await db.createChat({ id: chatId, type: 'single', name: null, members: [req.user.id, otherId], createdBy: req.user.id });
+// PATCH /chats/:id - placed AFTER all /:id/* routes to avoid interception
+router.patch('/:id', async (req, res) => {
+  try {
+    await db.init();
+    const chat = await loadChatAsMember(req, res);
+    if (!chat) return;
+    if (chat.type !== 'group') return res.status(400).json({ error: 'Only group chats support updates' });
+
+    const { isOwner, isAdmin } = await getGroupRole(chat, req.user.id);
+    if (!isOwner && !isAdmin) return res.status(403).json({ error: 'No permission' });
+
+    const { name } = req.body || {};
+    const updated = await db.updateChatName(chat.id, typeof name === 'string' ? name : null);
+
+    try {
+      emitToUsers(updated.members || [], 'chat.updated', { chat: updated });
+    } catch (e) {}
+
+    res.json(updated);
+  } catch (e) {
+    console.error('PATCH /chats/:id error', e?.message || e);
+    res.status(500).json({ error: 'Internal error' });
   }
-  res.json({ chatId: chat.id, chat });
 });
 
 module.exports = router;
