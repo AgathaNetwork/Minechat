@@ -606,6 +606,25 @@ async function transferChatOwner(chatId, newOwnerId) {
   return getChatById(chatId);
 }
 
+async function deleteChat(chatId) {
+  const p = await getPool();
+  const conn = await p.getConnection();
+  try {
+    await conn.beginTransaction();
+    await conn.execute('DELETE FROM chat_admins WHERE chat_id = ?', [chatId]);
+    await conn.execute('DELETE FROM chat_members WHERE chat_id = ?', [chatId]);
+    // Intentionally keep chat row + messages.
+    // Removing membership makes the chat disappear for all users while preserving history.
+    await conn.commit();
+    return true;
+  } catch (e) {
+    try { await conn.rollback(); } catch (e2) {}
+    throw e;
+  } finally {
+    conn.release();
+  }
+}
+
 // Session helpers
 async function createSession({ id, userId, expiresAt }) {
   const p = await getPool();
@@ -653,6 +672,7 @@ module.exports = {
   addChatMembers,
   removeChatMembers,
   transferChatOwner,
+  deleteChat,
   // messages
   createMessage,
   findMessageById,

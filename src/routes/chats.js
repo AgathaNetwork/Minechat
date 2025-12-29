@@ -49,6 +49,10 @@ router.post('/group', async (req, res) => {
       members: uniqueMembers,
       createdBy: req.user.id
     });
+
+    try {
+      emitToUsers(chat.members || uniqueMembers, 'chat.created', { chat });
+    } catch (e) {}
     res.json(chat);
   } catch (e) {
     console.error('POST /chats/group error', e?.message || e);
@@ -68,6 +72,12 @@ router.post('/', async (req, res) => {
     members: uniqueMembers,
     createdBy: req.user.id
   });
+
+  if (chat && chat.type === 'group') {
+    try {
+      emitToUsers(chat.members || uniqueMembers, 'chat.created', { chat });
+    } catch (e) {}
+  }
   res.json(chat);
 });
 
@@ -472,11 +482,35 @@ router.patch('/:id', async (req, res) => {
 
     try {
       emitToUsers(updated.members || [], 'chat.updated', { chat: updated });
+      emitToUsers(updated.members || [], 'chat.renamed', { chatId: updated.id, name: updated.name || null, chat: updated });
     } catch (e) {}
 
     res.json(updated);
   } catch (e) {
     console.error('PATCH /chats/:id error', e?.message || e);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+// DELETE /chats/:id - dissolve group chat (owner only)
+router.delete('/:id', async (req, res) => {
+  try {
+    await db.init();
+    const chat = await loadChatAsMember(req, res);
+    if (!chat) return;
+    if (chat.type !== 'group') return res.status(400).json({ error: 'Only group chats can be dissolved' });
+    if (chat.created_by !== req.user.id) return res.status(403).json({ error: 'Only owner can dissolve group' });
+
+    const memberIds = Array.isArray(chat.members) ? chat.members.slice() : [];
+    try {
+      emitToUsers(memberIds, 'chat.dissolved', { chatId: chat.id });
+      emitToUsers(memberIds, 'chat.deleted', { chatId: chat.id });
+    } catch (e) {}
+
+    await db.deleteChat(chat.id);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('DELETE /chats/:id error', e?.message || e);
     res.status(500).json({ error: 'Internal error' });
   }
 });
