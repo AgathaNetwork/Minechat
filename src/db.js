@@ -111,13 +111,18 @@ async function init() {
       INDEX (created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
-  
+
+  // New read-receipt table (append-only). Do NOT delete/update rows to prevent resetting read state.
   await p.execute(`
-    CREATE TABLE IF NOT EXISTS message_read (
+    CREATE TABLE IF NOT EXISTS message_reads (
       message_id VARCHAR(48),
       user_id VARCHAR(48),
+      chat_id VARCHAR(48),
+      read_at DATETIME,
       PRIMARY KEY (message_id, user_id),
-      INDEX (user_id)
+      INDEX (user_id),
+      INDEX (chat_id),
+      INDEX (read_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
 
@@ -520,7 +525,94 @@ async function recallMessage(messageId, recalledBy) {
 
 async function addMessageRead(messageId, userId) {
   const p = await getPool();
-  await p.execute('INSERT IGNORE INTO message_read (message_id, user_id) VALUES (?, ?)', [messageId, userId]);
+  const readAt = new Date();
+
+  // Preferred: write to the new message_reads table with chat_id/read_at.
+  // This is append-only because of the PK + INSERT IGNORE (no reset).
+  await p.execute(
+    'INSERT IGNORE INTO message_reads (message_id, user_id, chat_id, read_at) SELECT ?, ?, m.chat_id, ? FROM messages m WHERE m.id = ? LIMIT 1',
+    [messageId, userId, readAt, messageId]
+  );
+}
+
+async function addMessagesReadBatch(messageIds, userId) {
+  const ids = Array.isArray(messageIds) ? messageIds.filter(Boolean) : [];
+  const uniqueIds = Array.from(new Set(ids));
+  if (uniqueIds.length === 0) {
+    return { insertedIds: [], byChat: {}, rejected: { notFound: [], notMember: [] } };
+  }
+
+  const p = await getPool();
+  const readAt = new Date();
+
+  const [existRows] = await p.execute('SELECT id FROM messages WHERE id IN (?)', [uniqueIds]);
+  const existSet = new Set((existRows || []).map(r => r.id));
+
+  const [allowedRows] = await p.execute(
+    'SELECT m.id, m.chat_id FROM messages m JOIN chat_members cm ON cm.chat_id = m.chat_id AND cm.user_id = ? WHERE m.id IN (?)',
+    [userId, uniqueIds]
+  );
+  const allowed = allowedRows || [];
+  const allowedSet = new Set(allowed.map(r => r.id));
+
+  const notFound = uniqueIds.filter(id => !existSet.has(id));
+  const notMember = uniqueIds.filter(id => existSet.has(id) && !allowedSet.has(id));
+
+  if (allowed.length > 0) {
+    const values = [];
+    const params = [];
+    for (const r of allowed) {
+      values.push('(?, ?, ?, ?)');
+      params.push(r.id, userId, r.chat_id, readAt);
+    }
+    await p.execute(
+      `INSERT IGNORE INTO message_reads (message_id, user_id, chat_id, read_at) VALUES ${values.join(',')}`,
+      params
+    );
+  }
+
+  const byChat = {};
+  for (const r of allowed) {
+    if (!byChat[r.chat_id]) byChat[r.chat_id] = [];
+    byChat[r.chat_id].push(r.id);
+  }
+
+  return {
+    insertedIds: allowed.map(r => r.id),
+    byChat,
+    rejected: { notFound, notMember }
+  };
+}
+
+async function getMessageReadCounts(messageIds) {
+  const ids = Array.isArray(messageIds) ? messageIds.filter(Boolean) : [];
+  const uniqueIds = Array.from(new Set(ids));
+  if (uniqueIds.length === 0) return {};
+
+  const p = await getPool();
+  const [rows] = await p.execute(
+    'SELECT message_id, COUNT(*) AS cnt FROM message_reads WHERE message_id IN (?) GROUP BY message_id',
+    [uniqueIds]
+  );
+  const map = {};
+  for (const r of rows || []) {
+    map[r.message_id] = Number(r.cnt || 0);
+  }
+  return map;
+}
+
+async function getUserReadMessageIds(messageIds, userId) {
+  const ids = Array.isArray(messageIds) ? messageIds.filter(Boolean) : [];
+  const uniqueIds = Array.from(new Set(ids));
+  if (uniqueIds.length === 0) return new Set();
+  if (!userId) return new Set();
+
+  const p = await getPool();
+  const [rows] = await p.execute(
+    'SELECT message_id FROM message_reads WHERE user_id = ? AND message_id IN (?)',
+    [userId, uniqueIds]
+  );
+  return new Set((rows || []).map(r => r.message_id));
 }
 
 // Group management helpers
@@ -698,6 +790,9 @@ module.exports = {
   markMessageDeleted,
   recallMessage,
   addMessageRead,
+  addMessagesReadBatch,
+  getMessageReadCounts,
+  getUserReadMessageIds,
   // global messages
   createGlobalMessage,
   findGlobalMessageById,

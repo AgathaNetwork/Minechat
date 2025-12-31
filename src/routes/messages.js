@@ -123,14 +123,62 @@ router.post('/:messageId/read', async (req, res) => {
   await db.init();
   const msg = await db.findMessageById(messageId);
   if (!msg) return res.status(404).json({ error: 'Message not found' });
+
+  // Permission: user must be a member of the chat containing this message.
+  const chat = await db.getChatById(msg.chat_id);
+  if (!chat || !chat.members || !chat.members.includes(req.user.id)) {
+    // Use 404 to avoid leaking message existence across chats.
+    return res.status(404).json({ error: 'Message not found' });
+  }
+
   await db.addMessageRead(messageId, req.user.id);
   try {
     const io = getIo();
     io.to(`chat:${msg.chat_id}`).emit('message.read', { messageId, userId: req.user.id });
-    const chat = await db.getChatById(msg.chat_id);
     emitToUsers(chat?.members || [], 'message.read', { messageId, userId: req.user.id, chatId: msg.chat_id });
   } catch (e) { }
   res.json({ ok: true });
+});
+
+// Batch mark messages as read by current user
+// Body: { messageIds: string[] }
+router.post('/read/batch', async (req, res) => {
+  try {
+    await db.init();
+    const body = req.body || {};
+    const messageIds = Array.isArray(body.messageIds) ? body.messageIds : (Array.isArray(body.ids) ? body.ids : []);
+    const unique = Array.from(new Set(messageIds.filter(Boolean)));
+    if (unique.length === 0) return res.status(400).json({ error: 'Missing messageIds' });
+    if (unique.length > 500) return res.status(400).json({ error: 'Too many messageIds (max 500)' });
+
+    const result = await db.addMessagesReadBatch(unique, req.user.id);
+
+    try {
+      const io = getIo();
+      for (const [chatId, ids] of Object.entries(result.byChat || {})) {
+        // Room-level
+        io.to(`chat:${chatId}`).emit('message.read.batch', { chatId, messageIds: ids, userId: req.user.id });
+
+        // Backward compatibility: also emit per-message read events
+        for (const mid of ids) {
+          io.to(`chat:${chatId}`).emit('message.read', { messageId: mid, userId: req.user.id });
+        }
+
+        const chat = await db.getChatById(chatId);
+        if (chat && chat.members) {
+          emitToUsers(chat.members, 'message.read.batch', { chatId, messageIds: ids, userId: req.user.id });
+          for (const mid of ids) {
+            emitToUsers(chat.members, 'message.read', { messageId: mid, userId: req.user.id, chatId });
+          }
+        }
+      }
+    } catch (e) { }
+
+    res.json({ ok: true, insertedCount: result.insertedIds.length, insertedIds: result.insertedIds, rejected: result.rejected });
+  } catch (e) {
+    console.error('POST /messages/read/batch error', e?.message || e);
+    res.status(500).json({ error: 'Internal error' });
+  }
 });
 
 // Get messages for chat
@@ -141,6 +189,28 @@ router.get('/:chatId', async (req, res) => {
   if (!chat || !chat.members.includes(req.user.id)) return res.status(404).json({ error: 'Chat not found' });
   const since = req.query.since;
   const msgs = since ? await db.getMessagesForChatSince(chatId, since) : await db.getMessagesForChat(chatId);
+
+  const messageIds = (msgs || []).map(m => m.id).filter(Boolean);
+  if (messageIds.length > 0) {
+    if (chat.type === 'group') {
+      const counts = await db.getMessageReadCounts(messageIds);
+      for (const m of msgs) {
+        m.readCount = counts[m.id] || 0;
+      }
+    } else if (chat.type === 'single') {
+      const otherId = (chat.members || []).find(uid => uid !== req.user.id);
+      // Self chat: only me in members => don't return read status.
+      if (otherId) {
+        const otherReadSet = await db.getUserReadMessageIds(messageIds, otherId);
+        for (const m of msgs) {
+          if (m.from_user === req.user.id) {
+            m.read = otherReadSet.has(m.id);
+          }
+        }
+      }
+    }
+  }
+
   res.json(msgs);
 });
 

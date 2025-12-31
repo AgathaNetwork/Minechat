@@ -396,6 +396,28 @@ router.get('/:id/messages', async (req, res) => {
   } else {
     msgs = await db.getLatestMessagesForChat(chat.id, limit);
   }
+
+  const messageIds = (msgs || []).map(m => m.id).filter(Boolean);
+  if (messageIds.length > 0) {
+    if (chat.type === 'group') {
+      const counts = await db.getMessageReadCounts(messageIds);
+      for (const m of msgs) {
+        m.readCount = counts[m.id] || 0;
+      }
+    } else if (chat.type === 'single') {
+      const otherId = (chat.members || []).find(uid => uid !== req.user.id);
+      // Self chat: only me in members => don't return read status.
+      if (otherId) {
+        const otherReadSet = await db.getUserReadMessageIds(messageIds, otherId);
+        for (const m of msgs) {
+          if (m.from_user === req.user.id) {
+            m.read = otherReadSet.has(m.id);
+          }
+        }
+      }
+    }
+  }
+
   res.json(msgs);
 });
 

@@ -50,8 +50,10 @@ async function resolveUserIdFromHandshake(socket) {
 function addUserSocket(userId, socketId) {
   if (!userId) return;
   const set = userSockets.get(userId) || new Set();
+  const wasEmpty = set.size === 0;
   set.add(socketId);
   userSockets.set(userId, set);
+  return wasEmpty;
 }
 
 function removeUserSocket(userId, socketId) {
@@ -59,7 +61,9 @@ function removeUserSocket(userId, socketId) {
   const set = userSockets.get(userId);
   if (!set) return;
   set.delete(socketId);
-  if (set.size === 0) userSockets.delete(userId);
+  const isNowEmpty = set.size === 0;
+  if (isNowEmpty) userSockets.delete(userId);
+  return isNowEmpty;
 }
 
 function initSocket(server) {
@@ -83,10 +87,31 @@ function initSocket(server) {
 
   io.on('connection', socket => {
     // Track online sockets per user
-    if (socket.userId) addUserSocket(socket.userId, socket.id);
+    if (socket.userId) {
+      const first = addUserSocket(socket.userId, socket.id);
+
+      // Provide initial online list for presence display.
+      try {
+        socket.emit('presence.snapshot', { onlineUserIds: getOnlineUserIds() });
+      } catch (e) { }
+
+      // Broadcast online only when the first socket of this user connects.
+      if (first) {
+        try {
+          emitToOnlineUsers('user.online', { userId: socket.userId, at: new Date().toISOString() });
+        } catch (e) { }
+      }
+    }
 
     socket.on('disconnect', () => {
-      if (socket.userId) removeUserSocket(socket.userId, socket.id);
+      if (socket.userId) {
+        const last = removeUserSocket(socket.userId, socket.id);
+        if (last) {
+          try {
+            emitToOnlineUsers('user.offline', { userId: socket.userId, at: new Date().toISOString() });
+          } catch (e) { }
+        }
+      }
     });
 
     socket.on('join', chatId => {
