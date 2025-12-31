@@ -131,11 +131,19 @@ router.post('/:messageId/read', async (req, res) => {
     return res.status(404).json({ error: 'Message not found' });
   }
 
-  await db.addMessageRead(messageId, req.user.id);
+  const inserted = await db.addMessageRead(messageId, req.user.id);
+  if (!inserted) return res.json({ ok: true });
+
+  let readCount;
+  if (chat.type === 'group') {
+    const counts = await db.getMessageReadCounts([messageId]);
+    readCount = counts[messageId] || 0;
+  }
   try {
     const io = getIo();
-    io.to(`chat:${msg.chat_id}`).emit('message.read', { messageId, userId: req.user.id });
-    emitToUsers(chat?.members || [], 'message.read', { messageId, userId: req.user.id, chatId: msg.chat_id });
+    // For group chats, readCount is the absolute number of readers (distinct user_id).
+    io.to(`chat:${msg.chat_id}`).emit('message.read', { messageId, userId: req.user.id, chatId: msg.chat_id, readCount });
+    emitToUsers(chat?.members || [], 'message.read', { messageId, userId: req.user.id, chatId: msg.chat_id, readCount });
   } catch (e) { }
   res.json({ ok: true });
 });
@@ -156,19 +164,32 @@ router.post('/read/batch', async (req, res) => {
     try {
       const io = getIo();
       for (const [chatId, ids] of Object.entries(result.byChat || {})) {
+        if (!ids || ids.length === 0) continue;
+
+        const chat = await db.getChatById(chatId);
+        const isGroup = chat && chat.type === 'group';
+        let readCounts;
+        if (isGroup) {
+          const counts = await db.getMessageReadCounts(ids);
+          // Ensure every id has an absolute count (including 0) so clients can set values directly.
+          readCounts = {};
+          for (const mid of ids) {
+            readCounts[mid] = counts[mid] || 0;
+          }
+        }
+
         // Room-level
-        io.to(`chat:${chatId}`).emit('message.read.batch', { chatId, messageIds: ids, userId: req.user.id });
+        // For group chats, readCounts is an absolute mapping: { [messageId]: readCount }.
+        io.to(`chat:${chatId}`).emit('message.read.batch', { chatId, messageIds: ids, userId: req.user.id, readCounts });
 
         // Backward compatibility: also emit per-message read events
         for (const mid of ids) {
-          io.to(`chat:${chatId}`).emit('message.read', { messageId: mid, userId: req.user.id });
+          io.to(`chat:${chatId}`).emit('message.read', { messageId: mid, userId: req.user.id, chatId, readCount: isGroup ? (readCounts?.[mid] ?? 0) : undefined });
         }
-
-        const chat = await db.getChatById(chatId);
         if (chat && chat.members) {
-          emitToUsers(chat.members, 'message.read.batch', { chatId, messageIds: ids, userId: req.user.id });
+          emitToUsers(chat.members, 'message.read.batch', { chatId, messageIds: ids, userId: req.user.id, readCounts });
           for (const mid of ids) {
-            emitToUsers(chat.members, 'message.read', { messageId: mid, userId: req.user.id, chatId });
+            emitToUsers(chat.members, 'message.read', { messageId: mid, userId: req.user.id, chatId, readCount: isGroup ? (readCounts?.[mid] ?? 0) : undefined });
           }
         }
       }

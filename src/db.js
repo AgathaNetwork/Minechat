@@ -25,6 +25,27 @@ async function getPool() {
   return pool;
 }
 
+async function warmupPool(minConnections = 4) {
+  const p = await getPool();
+  const count = Math.max(0, Math.floor(Number(minConnections) || 0));
+  if (count === 0) return;
+
+  const connections = [];
+  try {
+    for (let i = 0; i < count; i += 1) {
+      // Force the pool to establish connections eagerly.
+      // Release immediately to keep them available for future queries.
+      // eslint-disable-next-line no-await-in-loop
+      const conn = await p.getConnection();
+      connections.push(conn);
+    }
+  } finally {
+    for (const c of connections) {
+      try { c.release(); } catch (e) {}
+    }
+  }
+}
+
 async function init() {
   const p = await getPool();
   // Create database schema if not exists
@@ -164,6 +185,10 @@ async function init() {
       INDEX (created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
+
+  // Ensure the pool has at least 4 established connections.
+  // mysql2's pool doesn't expose a true "min" option, so we warm it up.
+  await warmupPool(4);
 }
 
 // User helpers
@@ -529,10 +554,13 @@ async function addMessageRead(messageId, userId) {
 
   // Preferred: write to the new message_reads table with chat_id/read_at.
   // This is append-only because of the PK + INSERT IGNORE (no reset).
-  await p.execute(
+  const [result] = await p.execute(
     'INSERT IGNORE INTO message_reads (message_id, user_id, chat_id, read_at) SELECT ?, ?, m.chat_id, ? FROM messages m WHERE m.id = ? LIMIT 1',
     [messageId, userId, readAt, messageId]
   );
+
+  // mysql2 returns OkPacket for INSERT; affectedRows will be 1 only when a new row is inserted.
+  return !!(result && typeof result.affectedRows === 'number' && result.affectedRows > 0);
 }
 
 async function addMessagesReadBatch(messageIds, userId) {
@@ -559,10 +587,23 @@ async function addMessagesReadBatch(messageIds, userId) {
   const notFound = uniqueIds.filter(id => !existSet.has(id));
   const notMember = uniqueIds.filter(id => existSet.has(id) && !allowedSet.has(id));
 
+  // Only insert reads that do not already exist for this user.
+  let toInsert = [];
   if (allowed.length > 0) {
+    const allowedIds = allowed.map(r => r.id);
+    const allowedPlaceholders = allowedIds.map(() => '?').join(',');
+    const [alreadyRows] = await p.execute(
+      `SELECT message_id FROM message_reads WHERE user_id = ? AND message_id IN (${allowedPlaceholders})`,
+      [userId, ...allowedIds]
+    );
+    const alreadySet = new Set((alreadyRows || []).map(r => r.message_id));
+    toInsert = allowed.filter(r => !alreadySet.has(r.id));
+  }
+
+  if (toInsert.length > 0) {
     const values = [];
     const params = [];
-    for (const r of allowed) {
+    for (const r of toInsert) {
       values.push('(?, ?, ?, ?)');
       params.push(r.id, userId, r.chat_id, readAt);
     }
@@ -573,13 +614,13 @@ async function addMessagesReadBatch(messageIds, userId) {
   }
 
   const byChat = {};
-  for (const r of allowed) {
+  for (const r of toInsert) {
     if (!byChat[r.chat_id]) byChat[r.chat_id] = [];
     byChat[r.chat_id].push(r.id);
   }
 
   return {
-    insertedIds: allowed.map(r => r.id),
+    insertedIds: toInsert.map(r => r.id),
     byChat,
     rejected: { notFound, notMember }
   };
@@ -593,7 +634,7 @@ async function getMessageReadCounts(messageIds) {
   const p = await getPool();
   const placeholders = uniqueIds.map(() => '?').join(',');
   const [rows] = await p.execute(
-    `SELECT message_id, COUNT(*) AS cnt FROM message_reads WHERE message_id IN (${placeholders}) GROUP BY message_id`,
+    `SELECT message_id, COUNT(DISTINCT user_id) AS cnt FROM message_reads WHERE message_id IN (${placeholders}) GROUP BY message_id`,
     uniqueIds
   );
   const map = {};
