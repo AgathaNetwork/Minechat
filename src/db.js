@@ -545,12 +545,13 @@ async function addMessagesReadBatch(messageIds, userId) {
   const p = await getPool();
   const readAt = new Date();
 
-  const [existRows] = await p.execute('SELECT id FROM messages WHERE id IN (?)', [uniqueIds]);
+  const existPlaceholders = uniqueIds.map(() => '?').join(',');
+  const [existRows] = await p.execute(`SELECT id FROM messages WHERE id IN (${existPlaceholders})`, uniqueIds);
   const existSet = new Set((existRows || []).map(r => r.id));
 
   const [allowedRows] = await p.execute(
-    'SELECT m.id, m.chat_id FROM messages m JOIN chat_members cm ON cm.chat_id = m.chat_id AND cm.user_id = ? WHERE m.id IN (?)',
-    [userId, uniqueIds]
+    `SELECT m.id, m.chat_id FROM messages m JOIN chat_members cm ON cm.chat_id = m.chat_id AND cm.user_id = ? WHERE m.id IN (${existPlaceholders})`,
+    [userId, ...uniqueIds]
   );
   const allowed = allowedRows || [];
   const allowedSet = new Set(allowed.map(r => r.id));
@@ -590,9 +591,10 @@ async function getMessageReadCounts(messageIds) {
   if (uniqueIds.length === 0) return {};
 
   const p = await getPool();
+  const placeholders = uniqueIds.map(() => '?').join(',');
   const [rows] = await p.execute(
-    'SELECT message_id, COUNT(*) AS cnt FROM message_reads WHERE message_id IN (?) GROUP BY message_id',
-    [uniqueIds]
+    `SELECT message_id, COUNT(*) AS cnt FROM message_reads WHERE message_id IN (${placeholders}) GROUP BY message_id`,
+    uniqueIds
   );
   const map = {};
   for (const r of rows || []) {
@@ -608,9 +610,10 @@ async function getUserReadMessageIds(messageIds, userId) {
   if (!userId) return new Set();
 
   const p = await getPool();
+  const placeholders = uniqueIds.map(() => '?').join(',');
   const [rows] = await p.execute(
-    'SELECT message_id FROM message_reads WHERE user_id = ? AND message_id IN (?)',
-    [userId, uniqueIds]
+    `SELECT message_id FROM message_reads WHERE user_id = ? AND message_id IN (${placeholders})`,
+    [userId, ...uniqueIds]
   );
   return new Set((rows || []).map(r => r.message_id));
 }
