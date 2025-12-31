@@ -659,6 +659,17 @@ async function getUserReadMessageIds(messageIds, userId) {
   return new Set((rows || []).map(r => r.message_id));
 }
 
+async function getMessageReaderUserIds(messageId) {
+  const mid = String(messageId || '').trim();
+  if (!mid) return [];
+  const p = await getPool();
+  const [rows] = await p.execute(
+    'SELECT user_id FROM message_reads WHERE message_id = ? GROUP BY user_id ORDER BY MIN(read_at) ASC, user_id ASC',
+    [mid]
+  );
+  return (rows || []).map(r => r.user_id);
+}
+
 // Group management helpers
 async function updateChatName(chatId, name) {
   const p = await getPool();
@@ -837,6 +848,7 @@ module.exports = {
   addMessagesReadBatch,
   getMessageReadCounts,
   getUserReadMessageIds,
+  getMessageReaderUserIds,
   // global messages
   createGlobalMessage,
   findGlobalMessageById,

@@ -202,6 +202,29 @@ router.post('/read/batch', async (req, res) => {
   }
 });
 
+// Get distinct reader user ids for a message (sender-only)
+// GET /messages/:messageId/readers
+router.get('/:messageId/readers', async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    await db.init();
+    const msg = await db.findMessageById(messageId);
+    if (!msg) return res.status(404).json({ error: 'Message not found' });
+    if (msg.from_user !== req.user.id) return res.status(403).json({ error: 'Not sender' });
+
+    const chat = await db.getChatById(msg.chat_id);
+    if (!chat || !chat.members || !chat.members.includes(req.user.id)) {
+      return res.status(404).json({ error: 'Chat not found' });
+    }
+
+    const readerIds = await db.getMessageReaderUserIds(messageId);
+    res.json({ messageId, readerIds });
+  } catch (e) {
+    console.error('GET /messages/:messageId/readers error', e?.message || e);
+    res.status(500).json({ error: 'Internal error' });
+  }
+});
+
 // Get messages for chat
 router.get('/:chatId', async (req, res) => {
   const { chatId } = req.params;
