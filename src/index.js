@@ -11,6 +11,7 @@ const usersRoutes = require('./routes/users');
 const globalRoutes = require('./routes/global');
 const emojiRoutes = require('./routes/emoji');
 const imagesRoutes = require('./routes/images');
+const infoRoutes = require('./routes/info');
 const http = require('http');
 const db = require('./db');
 const { initSocket } = require('./socket');
@@ -30,6 +31,7 @@ app.use('/users', usersRoutes);
 app.use('/global', globalRoutes);
 app.use('/emoji', emojiRoutes);
 app.use('/images', imagesRoutes);
+app.use('/info', infoRoutes);
 
 app.get('/me', require('./middleware/auth'), (req, res) => {
   res.json({ user: req.user });
