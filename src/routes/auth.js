@@ -216,7 +216,9 @@ router.get('/callback', async (req, res) => {
       const sessionId = generateId();
       const days = parseInt(process.env.SESSION_EXPIRES_DAYS || '30', 10);
       const expiresAt = new Date(Date.now() + days * 24 * 3600 * 1000);
-      await db.createSession({ id: sessionId, userId: user.id, expiresAt });
+      const xfwd = req.headers['x-forwarded-for'];
+      const ip = typeof xfwd === 'string' && xfwd.trim() ? xfwd.split(',')[0].trim() : req.ip;
+      await db.createSession({ id: sessionId, userId: user.id, expiresAt, ip });
 
       // ensure self-chat exists
       let selfChat = await db.findSelfChatForUser(user.id);
