@@ -53,6 +53,38 @@ router.use((req, res, next) => minechatAuth(req, res, () => next()).catch(() => 
 
 // --- Public-ish endpoints (no session required) ---
 
+// GET /info/playerBrief?username=xxx - lookup other player's brief info
+// Returns: level, regDate, lastLogin
+router.get('/playerBrief', wrap(async (req, res) => {
+  const name = String((req.query && (req.query.username || req.query.name)) || '').trim();
+  if (!name) return res.json({ return: 0, error: 'missing_username' });
+
+  async function fetchByPlayerName(playerName) {
+    const [level, auth] = await Promise.all([
+      levelsystem.getPlayerLevel(playerName),
+      authme.getAuthmeUser(playerName)
+    ]);
+
+    return {
+      level: level ? level.level : null,
+      regDate: auth ? auth.regdate : null,
+      lastLogin: auth ? auth.lastlogin : null
+    };
+  }
+
+  let data = await fetchByPlayerName(name);
+  if (data.level === null && data.regDate === null && data.lastLogin === null) {
+    const former = await openid.getFormerName(name);
+    if (former) data = await fetchByPlayerName(former);
+  }
+
+  if (data.level === null && data.regDate === null && data.lastLogin === null) {
+    return res.json({ return: 0 });
+  }
+
+  return res.json({ return: 1, username: name, ...data });
+}));
+
 router.get('/geoIp', wrap(async (req, res) => {
   const axios = require('axios');
   const ip = String((req.query && req.query.ip) || getClientIp(req) || '').trim();
