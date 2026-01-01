@@ -158,6 +158,13 @@ async function init() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
 
+  // Backward-compatible migration for older databases
+  try {
+    await p.execute('ALTER TABLE sessions ADD COLUMN ip VARCHAR(64) NULL');
+  } catch (e) {
+    // ignore if column already exists
+  }
+
   await p.execute(`
     CREATE TABLE IF NOT EXISTS emoji_packs (
       id VARCHAR(48) PRIMARY KEY,
@@ -787,10 +794,15 @@ async function deleteChat(chatId) {
 }
 
 // Session helpers
-async function createSession({ id, userId, expiresAt }) {
+async function createSession({ id, userId, expiresAt, ip = null }) {
   const p = await getPool();
   const createdAt = new Date();
-  await p.execute('INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)', [id, userId, expiresAt, createdAt]);
+  try {
+    await p.execute('INSERT INTO sessions (id, user_id, expires_at, created_at, ip) VALUES (?, ?, ?, ?, ?)', [id, userId, expiresAt, createdAt, ip]);
+  } catch (e) {
+    // Fallback for databases without `ip` column.
+    await p.execute('INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)', [id, userId, expiresAt, createdAt]);
+  }
   return findSessionById(id);
 }
 
@@ -804,6 +816,26 @@ async function findSessionById(id) {
 async function deleteSession(id) {
   const p = await getPool();
   await p.execute('DELETE FROM sessions WHERE id = ?', [id]);
+}
+
+async function getRecentLoginRecordsForUser(userId, limit = 10) {
+  const p = await getPool();
+  const l = Math.max(1, Math.min(50, Number(limit) || 10));
+
+  try {
+    const [rows] = await p.execute(
+      `SELECT created_at AS time, ip FROM sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT ${l}`,
+      [userId]
+    );
+    return (rows || []).map(r => ({ ip: r.ip || null, time: r.time }));
+  } catch (e) {
+    // Fallback for databases without `ip` column.
+    const [rows] = await p.execute(
+      `SELECT created_at AS time FROM sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT ${l}`,
+      [userId]
+    );
+    return (rows || []).map(r => ({ ip: null, time: r.time }));
+  }
 }
 
 module.exports = {
@@ -866,5 +898,6 @@ module.exports = {
   // sessions
   createSession,
   findSessionById,
-  deleteSession
+  deleteSession,
+  getRecentLoginRecordsForUser,
 };

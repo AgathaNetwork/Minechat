@@ -115,6 +115,18 @@ router.get('/me', auth, async (req, res) => {
   }
 });
 
+// GET /users/me/login-history - recent 10 login records (ip + time)
+router.get('/me/login-history', auth, async (req, res) => {
+  try {
+    await db.init();
+    const history = await db.getRecentLoginRecordsForUser(req.user.id, 10);
+    res.json({ return: 1, history: history || [] });
+  } catch (e) {
+    console.error('GET /users/me/login-history error', e?.message || e);
+    res.status(500).json({ return: 0, error: 'Internal error' });
+  }
+});
+
 // GET /users/:id - return minimal public user info (id, username)
 router.get('/:id', async (req, res) => {
   try {
