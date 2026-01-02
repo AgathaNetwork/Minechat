@@ -211,6 +211,14 @@ async function findUserByMinecraftId(minecraftId) {
   return rows[0];
 }
 
+async function findUserByUsername(username) {
+  const p = await getPool();
+  const u = String(username || '').trim();
+  if (!u) return null;
+  const [rows] = await p.execute('SELECT * FROM users WHERE username = ? LIMIT 1', [u]);
+  return rows[0] || null;
+}
+
 async function findUserById(id) {
   const p = await getPool();
   const [rows] = await p.execute('SELECT * FROM users WHERE id = ? LIMIT 1', [id]);
@@ -844,6 +852,7 @@ module.exports = {
   // users
   findUserByMsId,
   findUserByMinecraftId,
+  findUserByUsername,
   findUserById,
   createUser,
   updateUsername,

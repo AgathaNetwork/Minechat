@@ -6,6 +6,7 @@ const multer = require('multer');
 const { uploadBuffer, putBuffer, encodeOssKeyForUrl } = require('../utils/oss');
 const Jimp = require('jimp');
 const { getIo, emitToUsers } = require('../socket');
+const levelsystem = require('../externaldb/levelsystem');
 
 const router = express.Router();
 
@@ -470,6 +471,74 @@ router.post('/:id/avatar', upload.single('file'), async (req, res) => {
 });
 
 // Send message to chat via /chats/:id/messages (proxy to messages logic)
+// POST /chats/:id/player-card - send a static player card message to a chat (group/single/self)
+// Body: { userId } or { uid } or { username }
+// Note: global chat is not supported.
+router.post('/:id/player-card', async (req, res) => {
+  try {
+    const chatId = req.params.id;
+    const targetUserId = (req.body && (req.body.userId || req.body.uid)) || null;
+    const targetUsername = (req.body && (req.body.username || req.body.minecraftUsername || req.body.name)) || null;
+
+    await db.init();
+    const chat = await db.getChatById(chatId);
+    if (!chat) return res.status(404).json({ error: 'Chat not found' });
+    if (chat.type === 'global') return res.status(400).json({ error: 'Global chat not supported' });
+    if (!Array.isArray(chat.members) || !chat.members.includes(req.user.id)) {
+      return res.status(403).json({ error: 'Not member of chat' });
+    }
+
+    let targetUser = null;
+    if (targetUserId) {
+      targetUser = await db.findUserById(String(targetUserId));
+    } else if (targetUsername) {
+      targetUser = await db.findUserByUsername(String(targetUsername));
+    } else {
+      return res.status(400).json({ error: 'Missing target user (userId/uid/username)' });
+    }
+
+    if (!targetUser) return res.status(404).json({ error: 'Target user not found' });
+    if (!targetUser.username) return res.status(400).json({ error: 'Target user missing username' });
+
+    let level = null;
+    try {
+      const lv = await levelsystem.getPlayerLevel(targetUser.username);
+      level = lv ? lv.level : null;
+    } catch (e) {
+      level = null;
+    }
+
+    const card = {
+      faceUrl: buildPublicUrl(targetUser.face_key),
+      name: targetUser.username,
+      uid: targetUser.id,
+      minecraftUuid: targetUser.minecraft_id || null,
+      level
+    };
+
+    const messageId = generateId();
+    const msg = await db.createMessage({
+      id: messageId,
+      chatId,
+      from: req.user.id,
+      type: 'player_card',
+      content: card,
+      repliedTo: null
+    });
+
+    try {
+      const io = getIo();
+      io.to(`chat:${chatId}`).emit('message.created', msg);
+      emitToUsers(chat.members || [], 'message.created', msg);
+    } catch (e) {}
+
+    return res.json(msg);
+  } catch (e) {
+    console.error('POST /chats/:id/player-card error', e?.message || e);
+    return res.status(500).json({ error: 'Internal error' });
+  }
+});
+
 router.post('/:id/messages', upload.single('file'), async (req, res) => {
   const chatId = req.params.id;
   const { type = 'text', content, repliedTo } = req.body;
