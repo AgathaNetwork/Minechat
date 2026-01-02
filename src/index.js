@@ -22,7 +22,21 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
+// Disable caching for all responses (API + static) to avoid stale data.
+app.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  next();
+});
+
+app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads'), {
+  setHeaders(res) {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+  }
+}));
 
 app.use('/auth', authRoutes);
 app.use('/chats', chatRoutes);
